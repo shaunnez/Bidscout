@@ -1,0 +1,125 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api, type ScanRun, type Summary } from "./api.ts";
+import { Feed } from "./Feed.tsx";
+import { ago } from "./format.ts";
+import { LotDrawer } from "./LotDrawer.tsx";
+import { Scans } from "./Scans.tsx";
+
+export type Route = { page: "deals" | "history" | "watch" | "scans"; params: URLSearchParams };
+
+function readHash(): Route {
+  const raw = window.location.hash.replace(/^#\/?/, "");
+  const [path, qs] = raw.split("?");
+  const page = (["history", "watch", "scans"] as const).find((p) => p === path) ?? "deals";
+  return { page, params: new URLSearchParams(qs ?? "") };
+}
+
+export function useRoute() {
+  const [route, setRoute] = useState(readHash);
+  useEffect(() => {
+    const on = () => setRoute(readHash());
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  const go = useCallback((page: Route["page"], params?: URLSearchParams, replace = false) => {
+    const qs = params?.toString();
+    const hash = `#/${page === "deals" ? "" : page}${qs ? `?${qs}` : ""}`;
+    if (replace) history.replaceState(null, "", hash);
+    else history.pushState(null, "", hash);
+    setRoute(readHash());
+  }, []);
+  return { route, go };
+}
+
+/** Polls the current scan while one is active (every 3s), otherwise every 30s. */
+export function useScan() {
+  const [run, setRun] = useState<ScanRun | null>(null);
+  const active = run?.state === "queued" || run?.state === "running";
+  const refresh = useCallback(() => api.currentScan().then((r) => setRun(r.run)).catch(() => {}), []);
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, active ? 3000 : 30000);
+    return () => clearInterval(t);
+  }, [active, refresh]);
+  return { run, active, refresh };
+}
+
+export function App() {
+  const { route, go } = useRoute();
+  const scan = useScan();
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [q, setQ] = useState(route.params.get("q") ?? "");
+  const lotId = Number(route.params.get("lot")) || null;
+
+  useEffect(() => {
+    api.summary().then(setSummary).catch(() => {});
+  }, [scan.run?.state, scan.run?.finished_at]);
+  useEffect(() => setQ(route.params.get("q") ?? ""), [route.params]);
+
+  const setParams = useCallback(
+    (mut: (p: URLSearchParams) => void, replace = false) => {
+      const p = new URLSearchParams(route.params);
+      mut(p);
+      go(route.page, p, replace);
+    },
+    [route, go],
+  );
+
+  const submitSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    const page = route.page === "scans" ? "deals" : route.page;
+    const p = new URLSearchParams(page === route.page ? route.params : undefined);
+    if (q.trim()) p.set("q", q.trim());
+    else p.delete("q");
+    p.delete("page");
+    go(page, p);
+  };
+
+  const openLot = useCallback((id: number) => setParams((p) => p.set("lot", String(id))), [setParams]);
+  const closeLot = useCallback(() => setParams((p) => p.delete("lot")), [setParams]);
+  const progress = useMemo(() => {
+    const r = scan.run;
+    if (!r || !scan.active) return null;
+    if (r.kind === "history") return r.pages_total ? `${r.pages_read}/${r.pages_total} pages` : `${r.pages_read} pages`;
+    if (r.phase === "details") return `${r.details_read}/${r.details_total} lot pages`;
+    return `${r.lots_seen} lots`;
+  }, [scan.run, scan.active]);
+
+  return (
+    <div className="app">
+      <header className="top">
+        <a className="brand" href="#/" onClick={(e) => { e.preventDefault(); go("deals"); }}>
+          <span className="brand-mark" aria-hidden>B</span>
+          <span>BidScout</span>
+        </a>
+        <form className="search" onSubmit={submitSearch} role="search">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2" /><path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search lots: thinkpad t14, rtx 3060, 27 inch, forklift…" aria-label="Search lots" />
+        </form>
+        <nav className="tabs">
+          {([["deals", "Live deals"], ["history", "Past sales"], ["watch", `Watchlist${summary?.watching ? ` (${summary.watching})` : ""}`], ["scans", "Scans"]] as const).map(([p, label]) => (
+            <a key={p} href={`#/${p === "deals" ? "" : p}`} className={route.page === p ? "on" : ""} onClick={(e) => { e.preventDefault(); go(p); }}>{label}</a>
+          ))}
+        </nav>
+        <button
+          className={`scan-btn ${scan.active ? "busy" : ""}`}
+          onClick={() => (scan.active ? go("scans") : api.startScan({ kind: "live" }).then(() => { scan.refresh(); go("scans"); }))}
+          title={summary?.last_live_scan ? `Last live scan ${ago(summary.last_live_scan)}` : "No scan yet"}
+        >
+          <span className="dot" aria-hidden />
+          {scan.active ? <>Scanning <small>{progress}</small></> : <>Scan now <small>{summary?.last_live_scan ? ago(summary.last_live_scan) : "never"}</small></>}
+        </button>
+      </header>
+
+      <main className="body">
+        {route.page === "scans" ? (
+          <Scans scan={scan} />
+        ) : (
+          <Feed key={route.page} page={route.page} params={route.params} setParams={setParams} openLot={openLot} summary={summary} scanFinished={scan.run?.finished_at ?? null} />
+        )}
+      </main>
+
+      {lotId && <LotDrawer id={lotId} onClose={closeLot} onOpenLot={openLot} />}
+    </div>
+  );
+}

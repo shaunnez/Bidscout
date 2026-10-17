@@ -1,0 +1,40 @@
+{
+  "name": "bidscout",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Search and deal scanning for number8.bid auctions, with every detail cited to the stored listing.",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "tsx --env-file-if-exists=.env.local server/api.ts",
+    "worker": "tsx --env-file-if-exists=.env.local server/worker.ts",
+    "scan": "tsx --env-file-if-exists=.env.local scripts/scan.ts",
+    "setup:db": "tsx --env-file-if-exists=.env.local scripts/setup-db.ts",
+    "reparse": "tsx --env-file-if-exists=.env.local scripts/reparse.ts",
+    "check:citations": "tsx --env-file-if-exists=.env.local scripts/check-citations.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/unit/*.test.ts",
+    "test:db": "tsx --env-file-if-exists=.env.local scripts/test-db.ts",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.3.0",
+    "fastify": "^5.12.7",
+    "pg": "^8.23.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.2"
+  }
+}

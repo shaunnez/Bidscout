@@ -1,24 +1,18 @@
-# BidScout: a computer deal scanner for number8.bid
+# BidScout: a deal scanner for number8.bid
 
-Plan, 17 October 2026. Nothing is built yet. This folder is kept separate from BidEdge (Groundwork) on purpose: it borrows the patterns that Groundwork's GETS intake uses, but none of its code paths, so it can move to its own repository later.
+Plan, 17 October 2026, updated the same day with Shaun's decisions and the first build. BidScout borrows the patterns that Groundwork's GETS intake uses, but none of its code. §7 lists what is built.
 
-## 0. Before anything runs: permission
+## 0. Permission and decisions (17 October 2026)
 
-number8.bid's `robots.txt` allows crawling, except for `/admin` and `/myaccount`, and it publishes an auction sitemap. Its **Terms of Use** say otherwise:
+number8.bid's Terms of Use forbid "any automatic device or manual process to monitor or copy" its pages. **Shaun has permission from number 8 solutions** and asked that BidScout scrape with consideration and retries. The rules are in the README ("Scraping with consideration") and in `server/transport.ts`.
 
-> "Access and Interference: You agree that You will not use any automatic device or manual process to monitor or copy number 8 solutions Ltd web pages or the content contained herein."
+Decisions:
 
-(Source: `https://www.number8.bid/api/staticpage/terms`, read 17 Oct 2026.)
-
-Groundwork's GETS intake identifies itself as "approved access only". BidScout should hold to the same standard. The first step is to ask number 8 solutions, through the site's Contact Us page, for written permission to read their public listing API for personal deal research. Explain the pacing (one request a second, manual runs only) and offer to stop on request. Ask whether they would prefer to provide an export.
-
-Until they say yes:
-
-- no scheduled or bulk runs;
-- no scraped data committed to Git;
-- development uses a few hand-saved responses kept under the Git-ignored `.local-groundwork/bidscout/`.
-
-If they say no, the UI and parser are still useful for any data that can be got legitimately, but the backfill and the comparable-sales feature (§4.3) go away.
+1. **Permission:** given. Scrape considerately, with retries.
+2. **Who it's for:** Shaun only, for now. No sign-in; it runs locally.
+3. **Repository:** its own folder and repo (`bidscout`).
+4. **Scope:** all categories. Computers get the deep spec parser; every other lot gets faults, search, category facets and title-based price history.
+5. **Sites:** number8.bid only. Possible later sources: All About Auctions (Penrose, Auckland; liquidations and freight claims), Ritchie Bros. IronPlanet (heavy equipment), and Trade Me (official API). Site specifics live in `server/number8.ts`, so another adapter can sit beside it.
 
 ## 1. What the site actually is
 
@@ -143,7 +137,7 @@ spec_values(lot_revision_id, field, value, unit,
 - **Bidder fields are redacted before writing.** Before a response is stored, `high_bidder`, `winner`, `highbidder_username` and the bid history's `user_name` and `buyer_number` are replaced with `"[redacted]"`. The snapshot records the SHA-256 of the original bytes and the list of paths removed. Citations point into the redacted copy, which is the stored source.
   - This is a deliberate exception to Groundwork's "keep original bytes" rule. A bidder's username is personal data BidScout has no use for.
   - Staff names, emails and mobiles in auction intros are never surfaced (the same rule BidEdge follows).
-- Everything sits under `.local-groundwork/bidscout/` locally. Nothing scraped goes into Git.
+- Everything sits under `.data/` (Git-ignored) and the database. Nothing scraped goes into Git.
 
 ### 3.5 CPU catalogue
 
@@ -177,7 +171,7 @@ bidscout/
   shared/            clean-text, spec parsers, machine keys, deal maths (pure, tested)
   src/               React + Vite UI (feed, lot page, side-panel citations, live card)
   scripts/           scan CLI, check-citations, backfill
-  tests/             node:test, fixtures loaded from .local-groundwork/bidscout/fixtures
+  tests/             node:test; fixtures are made-up lots in number8's formats
 ```
 
 TypeScript, Node 22, Fastify, Postgres, React and Vite: the same stack as BidEdge, so the patterns copy across. The modules to copy and adapt rather than import are:
@@ -202,10 +196,21 @@ Separate ports from BidEdge: UI 5188, API 4328. AI, used only for free-text fall
 
 Each milestone is its own PR. Nothing is deployed until you say so.
 
-## 7. Decisions for Shaun
+## 7. Status
 
-1. **Permission:** OK to contact number 8 solutions as described in §0, from your name or a BidScout address?
-2. **Who it's for:** just you, or eventually other buyers? That decides sign-in, hosting and how carefully the data can be reused.
-3. **Repository:** start in this folder (as asked) and move it to its own repository at M1? I recommend moving.
-4. **Scope:** computers only (laptops, desktops, all-in-ones, servers, tablets, monitors, parts), or computers first with other categories later?
-5. **Other sites:** only number8.bid, or other NZ auction sites later? If later, keep the AuctionMethod adapter separate from the computer parser from the start, which the layout above already does.
+**Built (first build, 17 Oct):**
+
+- **M1, ingestion core:** live and history scans with leases, cursors and fenced writes; the considerate transport; redacted, hashed snapshots; revisions and observations; final bids; payment terms. Triggered with `npm run scan` or the Scan now button.
+- **M2, parser and citations:** the ITAD, labelled and free-text formats, faults, and machine, similar and title keys. Every value carries a span; `check:citations` and the database test verify them.
+- **M3, UI:** the feed with facets, search, lot drawer, source panel, all-in price, ticking deadlines, Scans page with live card, and watchlist.
+- **M4, comparables:** final-bid ranges per key, rebuilt after each scan. The drawer lists the sales used.
+
+**Next:**
+
+- Read all past sales in chunks (about 2,200 pages) so most machines have comparables.
+- Measure parser accuracy on 100 hand-labelled lots (aim for 95%+ on CPU, RAM and storage).
+- A max-bid planner on watched lots (enter a ceiling all-in price, see the matching bid).
+- A batch view grouping identical lots in one sale.
+- OCR of spec stickers and BIOS photos, labelled "read from photo".
+- A model fallback for free-text lots, with verbatim quote checks.
+- Parsers for other categories that need more than title keys, such as vehicles (year, make, model, odometer).
