@@ -56,6 +56,8 @@ The first live scan takes 10–20 minutes, because it opens every lot page once.
 - A lot's listing content (title, description, quantity, category, prices set by the seller) is a **revision**, kept only when it changes. Bids, bid counts and close times are **observations**, kept only when they move. Final bids come from the snapshot that showed the lot closed.
 - The parsers (`shared/specs/computer.ts`) work on `cleanText()` of the title and description. Each value is stored in `spec_values` with its field, value, character offsets and exact quote. The drawer re-reads the snapshot, re-cleans the field and checks the quote is still at those offsets before showing it.
 - `npm run check:citations` re-checks every stored citation; the database test does the same on its fixtures.
+- `npm run replay` rebuilds every derived table from the stored responses, in fetch order, without any requests. Use it after fixing how a field is read. The database test checks that a replay reproduces the same state.
+- **Times:** AuctionMethod's unix fields (`end_time`, `ends`) hold New Zealand wall-clock time written as if it were UTC, and the auction list's ISO strings put a "+1300" label on a UTC clock. Both are converted in `server/number8.ts` (with daylight saving), checked against the site's own display text.
 - Evidence tables (`snapshots`, `lot_revisions`, `lot_observations`, `spec_values`, `auction_terms`) reject updates.
 - Nothing is guessed. A value that isn't in the text is simply missing, and generations are only given for Intel Core.
 
@@ -77,7 +79,7 @@ server/      API (Fastify), worker, transport, store, redaction, schema.sql
 server/scan/ runner (leases, cursor, stages), ingest, comparisons
 shared/      clean text, citation helpers, parsers, payment terms
 src/         React UI (feed, lot drawer, source panel, scans)
-scripts/     scan, setup-db, reparse, check-citations, test-db
+scripts/     scan, setup-db, reparse, replay, check-citations, test-db
 tests/       unit (parsers, transport, redaction) and db (whole pipeline against a fake site)
 ```
 

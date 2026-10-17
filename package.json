@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/unit/*.test.ts",
     "test:db": "tsx --env-file-if-exists=.env.local scripts/test-db.ts",
-    "build": "vite build"
+    "build": "vite build",
+    "replay": "tsx --env-file-if-exists=.env.local scripts/replay.ts"
   },
   "dependencies": {
     "@fastify/static": "^8.3.0",

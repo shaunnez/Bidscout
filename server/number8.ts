@@ -89,7 +89,38 @@ export const num = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+const NZ_PARTS = new Intl.DateTimeFormat("en-NZ", {
+  timeZone: "Pacific/Auckland", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit",
+});
+
+/** Pacific/Auckland's offset from UTC at an instant, in ms (+13h in summer, +12h in winter). */
+export function nzOffsetMs(at: Date): number {
+  const p = Object.fromEntries(NZ_PARTS.formatToParts(at).map((x) => [x.type, x.value]));
+  const wall = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute), Number(p.second));
+  return Math.round((wall - at.getTime()) / 60_000) * 60_000;
+}
+
+/**
+ * AuctionMethod's unix fields (end_time, ends, start_time, end_time_unix) hold New Zealand
+ * wall-clock time written as if it were UTC: 1792695600 is "22 Oct 19:00", shown on the site
+ * as 7:00 pm NZ (06:00 UTC). Checked against the site's own display_end_time and
+ * start_time_display fields.
+ */
 export const unixToDate = (v: unknown): Date | null => {
   const n = num(v);
-  return n && n > 0 ? new Date(n * 1000) : null;
+  if (!n || n <= 0) return null;
+  const wall = n * 1000;
+  let at = wall - 13 * 3_600_000;
+  for (let i = 0; i < 2; i++) at = wall - nzOffsetMs(new Date(at));
+  return new Date(at);
+};
+
+/**
+ * The auction list's ISO strings carry a "+1300" label on a UTC clock:
+ * "2026-10-14T22:00:00+1300" is 15 Oct 11:00 am NZ (the start_time_display of its lots).
+ */
+export const isoToDate = (v: unknown): Date | null => {
+  const m = typeof v === "string" ? /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)/.exec(v) : null;
+  return m ? new Date(`${m[1]}Z`) : null;
 };

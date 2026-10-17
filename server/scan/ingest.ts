@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { cleanText } from "../../shared/clean.ts";
 import { PARSER_VERSION, parseComputer, titleKey } from "../../shared/specs/computer.ts";
 import type { Tx } from "../db.ts";
-import { num, unixToDate, type N8Auction, type N8Lot } from "../number8.ts";
+import { isoToDate, num, unixToDate, type N8Auction, type N8Lot } from "../number8.ts";
 
 /** A lot that ended more than this long ago is closed (extended bidding can push the end out). */
 export const CLOSE_GRACE_MS = 5 * 60_000;
@@ -44,7 +44,7 @@ export async function upsertAuction(c: Tx, a: N8Auction, snapshotId: number, pat
        city=EXCLUDED.city, region=EXCLUDED.region, item_count=EXCLUDED.item_count, url=EXCLUDED.url,
        thumb_url=EXCLUDED.thumb_url, list_hash=EXCLUDED.list_hash, snapshot_id=EXCLUDED.snapshot_id,
        snapshot_path=EXCLUDED.snapshot_path, last_seen=EXCLUDED.last_seen`,
-    [id, title, a.starts ? new Date(a.starts) : null, a.ends ? new Date(a.ends) : null, a.city ?? null,
+    [id, title, isoToDate(a.starts), isoToDate(a.ends), a.city ?? null,
       a.state_abbreviation ?? null, num(a.item_count), a.url ? new URL(a.url, "https://www.number8.bid").toString() : null,
       a.main_thumb_url ?? null, hash(fields), snapshotId, path, now],
   );

@@ -7,7 +7,9 @@ import test from "node:test";
 import { cleanText } from "../../shared/clean.ts";
 import { resolvePath } from "../../shared/cite.ts";
 import { connect, migrate } from "../../server/db.ts";
+import { nzOffsetMs } from "../../server/number8.ts";
 import { loadSnapshotDoc } from "../../server/snapshots.ts";
+import { replayAll } from "../../server/scan/replay.ts";
 import { startRun, workOneRun } from "../../server/scan/runner.ts";
 import { ObjectStore } from "../../server/store.ts";
 import type { FetchResult, Transport } from "../../server/transport.ts";
@@ -17,7 +19,8 @@ if (!url) throw new Error("Run with npm run test:db");
 
 // An illustrative site: one live IT auction with two lots, one past sale. Not real listings.
 const NOW = new Date("2026-10-17T00:00:00Z");
-const unix = (d: Date) => String(Math.floor(d.getTime() / 1000));
+// number8 writes NZ wall-clock time into its unix fields (see server/number8.ts).
+const unix = (d: Date) => String(Math.floor((d.getTime() + nzOffsetMs(d)) / 1000));
 const inDays = (n: number) => new Date(NOW.getTime() + n * 86_400_000);
 
 function site() {
@@ -40,8 +43,9 @@ function site() {
         bid_count: "0", end_time: unix(inDays(2)), item_url: "https://www.number8.bid/auction/90/item/y-502/" },
     ],
   });
+  let current = { path: "", form: "" };
   const respond = (body: unknown): FetchResult => ({
-    method: "POST", url: "https://www.number8.bid/api/x", requestBody: "", status: 200,
+    method: "POST", url: `https://www.number8.bid${current.path}`, requestBody: current.form, status: 200,
     body: Buffer.from(JSON.stringify(body)), elapsedMs: 5, attempts: 1,
   });
   const transport: Transport = {
@@ -50,10 +54,11 @@ function site() {
     async post(p, form) {
       this.stats.requests++;
       state.calls.push(`${p} ${JSON.stringify(form)}`);
+      current = { path: p, form: new URLSearchParams(Object.entries(form).map(([k, v]) => [k, String(v)])).toString() };
       if (p === "/api/auctions")
         return respond({ total: 2, page: 1, total_pages: 1, data: [
-          { id: "90", title: "Unreserved IT Equipment Liquidation - Rosedale", ends: inDays(2).toISOString(), starts: inDays(-5).toISOString(), city: "Rosedale", item_count: "2" },
-          { id: "10", title: "Closed - Old Sale", ends: inDays(-400).toISOString(), city: "Drury", item_count: "5" },
+          { id: "90", title: "Unreserved IT Equipment Liquidation - Rosedale", ends: inDays(2).toISOString().slice(0, 19) + "+1300", starts: inDays(-5).toISOString().slice(0, 19) + "+1300", city: "Rosedale", item_count: "2" },
+          { id: "10", title: "Closed - Old Sale", ends: inDays(-400).toISOString().slice(0, 19) + "+1300", city: "Drury", item_count: "5" },
         ] });
       if (p === "/api/getitems" && form.item_type === "itemlist") return respond(lots());
       if (p === "/api/getitems" && form.item_type === "pastsales")
@@ -97,6 +102,7 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
 
   const lot = (await db.query(`SELECT * FROM lots WHERE id=501`)).rows[0];
   assert.equal(lot.device_type, "laptop");
+  assert.equal(lot.ends_at.toISOString(), inDays(2).toISOString(), "close time converted from NZ wall clock");
   assert.equal(lot.cpu, "i5-1145G7");
   assert.equal(lot.ram_gb, 16);
   assert.deepEqual(lot.faults, ["no-charger"]);
@@ -152,6 +158,17 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   assert.equal(closed.status, "closed");
   assert.equal(closed.final_bid, 45);
   assert.ok(closed.outcome_snapshot_id);
+
+  // Replaying the stored responses rebuilds the same state without any requests.
+  const snapshotOf = async () => (await db.query(
+    `SELECT id, status, final_bid, ends_at, machine_key, ram_gb, faults, current_revision_id IS NOT NULL AS has_rev FROM lots ORDER BY id`)).rows;
+  const before = await snapshotOf();
+  const obsBefore = (await db.query(`SELECT count(*)::int AS n FROM lot_observations`)).rows[0].n;
+  const requestsBefore = transport.stats.requests;
+  await replayAll(db, store);
+  assert.deepEqual(await snapshotOf(), before);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM lot_observations`)).rows[0].n, obsBefore);
+  assert.equal(transport.stats.requests, requestsBefore, "replay makes no requests");
 
   // Evidence rows cannot be edited.
   await assert.rejects(db.query(`UPDATE spec_values SET quote='x'`), /immutable/);

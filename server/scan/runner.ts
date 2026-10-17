@@ -3,7 +3,7 @@ import os from "node:os";
 import { cleanText } from "../../shared/clean.ts";
 import { parseTerms } from "../../shared/terms.ts";
 import { tx, type Db, type Tx } from "../db.ts";
-import { n8, type N8AuctionsPage, type N8ItemData, type N8LotsPage } from "../number8.ts";
+import { isoToDate, n8, type N8AuctionsPage, type N8ItemData, type N8LotsPage } from "../number8.ts";
 import { saveSnapshot } from "../snapshots.ts";
 import type { ObjectStore } from "../store.ts";
 import { HttpError, StopRunError, type Transport } from "../transport.ts";
@@ -145,14 +145,14 @@ async function liveStep(ctx: Ctx, cur: LiveCursor): Promise<boolean> {
 
   if (cur.stage === "auctions") {
     const res = await n8.auctions(transport, cur.auctionPage);
-    const snap = await saveSnapshot<N8AuctionsPage>(db, store, run.id, res);
+    const snap = await saveSnapshot<N8AuctionsPage>(db, store, run.id, res, ctx.now());
     const page = snap.doc;
     await tx(db, async (c) => {
       await fence(c, ctx);
       let fresh = 0;
       for (const [i, a] of (page.data ?? []).entries()) {
         await upsertAuction(c, a, snap.id, `data.${i}`, now);
-        const ends = a.ends ? new Date(a.ends).getTime() : 0;
+        const ends = isoToDate(a.ends)?.getTime() ?? 0;
         if (ends >= now.getTime() - lookback) {
           fresh++;
           const done = await c.query(`SELECT finalized_at FROM auctions WHERE id=$1`, [Number(a.id)]);
@@ -184,7 +184,7 @@ async function liveStep(ctx: Ctx, cur: LiveCursor): Promise<boolean> {
     let snapId: number;
     try {
       const res = await n8.lots(transport, auctionId, cur.lotPage);
-      const snap = await saveSnapshot<N8LotsPage>(db, store, run.id, res);
+      const snap = await saveSnapshot<N8LotsPage>(db, store, run.id, res, ctx.now());
       page = snap.doc;
       snapId = snap.id;
     } catch (e) {
@@ -243,7 +243,7 @@ async function liveStep(ctx: Ctx, cur: LiveCursor): Promise<boolean> {
     }
     try {
       const res = await n8.itemData(transport, lot.id, lot.auction_id);
-      const snap = await saveSnapshot<N8ItemData>(db, store, run.id, res);
+      const snap = await saveSnapshot<N8ItemData>(db, store, run.id, res, ctx.now());
       await tx(db, async (c) => {
         await fence(c, ctx);
         await recordDetail(c, lot.id, lot.auction_id, snap.id, snap.doc);
@@ -304,7 +304,7 @@ async function historyStep(ctx: Ctx, cur: HistoryCursor): Promise<boolean> {
       return finishPartial(ctx);
     }
     const res = await n8.pastSales(transport, cur.page, { category: run.options.category, keyword: run.options.keyword });
-    const snap = await saveSnapshot<N8LotsPage>(db, store, run.id, res);
+    const snap = await saveSnapshot<N8LotsPage>(db, store, run.id, res, ctx.now());
     const page = snap.doc;
     const now = ctx.now();
     await tx(db, async (c) => {

@@ -109,3 +109,13 @@ test("payment terms give premium and GST with their wording", () => {
   assert.equal(text.slice(t.premium!.start, t.premium!.end), t.premium!.quote);
   assert.equal(Math.round(allIn(1000, 15, 15) * 100) / 100, 1322.5);
 });
+
+test("number8 times: unix fields are NZ wall clock, ISO strings are a UTC clock", async () => {
+  const { unixToDate, isoToDate } = await import("../../server/number8.ts");
+  // display_end_time "Oct 22, 2026 07:00:00 PM" (NZDT) for end_time 1792695600
+  assert.equal(unixToDate("1792695600")!.toISOString(), "2026-10-22T06:00:00.000Z");
+  // a winter date: 7:00 pm NZST is 07:00 UTC
+  assert.equal(unixToDate(String(Date.UTC(2026, 6, 1, 19, 0) / 1000))!.toISOString(), "2026-07-01T07:00:00.000Z");
+  // auction starts "2026-10-14T22:00:00+1300" = lots' start_time_display "Thu, Oct 15, 2026 at 11:00:00 am NZ"
+  assert.equal(isoToDate("2026-10-14T22:00:00+1300")!.toISOString(), "2026-10-14T22:00:00.000Z");
+});

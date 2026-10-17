@@ -9,7 +9,7 @@ export interface Snapshot<T = unknown> {
 }
 
 /** Parses, redacts and stores a response. The stored (redacted) JSON is what citations point into. */
-export async function saveSnapshot<T>(c: Db | Tx, store: ObjectStore, runId: number | null, r: FetchResult): Promise<Snapshot<T>> {
+export async function saveSnapshot<T>(c: Db | Tx, store: ObjectStore, runId: number | null, r: FetchResult, at: Date = new Date()): Promise<Snapshot<T>> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(r.body.toString("utf8"));
@@ -21,9 +21,9 @@ export async function saveSnapshot<T>(c: Db | Tx, store: ObjectStore, runId: num
   const { ref, hash } = store.put(stored);
   const row = await c.query(
     `INSERT INTO snapshots (run_id, method, url, request_body, status, elapsed_ms, attempts,
-       original_sha256, stored_sha256, object_ref, bytes, redactions)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-    [runId, r.method, r.url, r.requestBody, r.status, r.elapsedMs, r.attempts, sha256(r.body), hash, ref, stored.length, JSON.stringify(redactions)],
+       original_sha256, stored_sha256, object_ref, bytes, redactions, fetched_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+    [runId, r.method, r.url, r.requestBody, r.status, r.elapsedMs, r.attempts, sha256(r.body), hash, ref, stored.length, JSON.stringify(redactions), at],
   );
   return { id: row.rows[0].id, doc: value as T };
 }
