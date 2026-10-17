@@ -10,3 +10,4 @@ A personal deal scanner for number8.bid (Shaun only, for now). Read `README.md` 
 - **No scraped data in Git.** Snapshots live in `.data/` and the database. Test fixtures are made-up lots in number8's formats.
 - Show dates in New Zealand time. The all-in price is bid × (1 + premium) × (1 + GST), with each rate cited from the auction's payment terms when they have been read; otherwise the GST is labelled "assumed".
 - Run `npm run typecheck`, `npm test` and `npm run test:db` before pushing. Check UI changes in a browser.
+- **Deploying needs Shaun's go-ahead, and he runs `railway up` himself.** Hosted BidScout must have `BIDSCOUT_PASSWORD` set (the server enforces it), a volume at `/data`, and exactly one replica.

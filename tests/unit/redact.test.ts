@@ -19,3 +19,15 @@ test("bidder identities and personal contacts are removed, prices and premiums k
   assert.ok(redactions.includes("items.0.high_bidder"));
   assert.ok(redactions.includes("intro"));
 });
+
+test("hosted password gate: Basic auth with any username, constant-time compare", async () => {
+  const { passwordAccepted } = await import("../../server/auth.ts");
+  const basic = (u: string, p: string) => `Basic ${Buffer.from(`${u}:${p}`).toString("base64")}`;
+  assert.equal(passwordAccepted(undefined, ""), true, "no password set: open (local use)");
+  assert.equal(passwordAccepted(undefined, "s3cret"), false);
+  assert.equal(passwordAccepted(basic("shaun", "s3cret"), "s3cret"), true);
+  assert.equal(passwordAccepted(basic("", "s3cret"), "s3cret"), true);
+  assert.equal(passwordAccepted(basic("shaun", "wrong"), "s3cret"), false);
+  assert.equal(passwordAccepted(basic("a", "pass:with:colons"), "pass:with:colons"), true);
+  assert.equal(passwordAccepted("Bearer s3cret", "s3cret"), false);
+});
