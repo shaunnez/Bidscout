@@ -36,6 +36,19 @@ npm run scan -- history --category "IT & Equipment"
 
 The first live scan takes 10–20 minutes, because it opens every lot page once. Later scans only open new or changed lots. All past sales come to roughly 2,200 pages, about 50 minutes in total; run them in chunks.
 
+## Hosting on Railway
+
+The repo has a `Dockerfile` and `railway.toml`. Shaun runs the deploy himself (`railway up`). One service runs the API, the UI and the scan worker; scans still start only when someone presses Scan now.
+
+1. In a new Railway project, add **PostgreSQL**. The service picks up its `DATABASE_URL`.
+2. Add a **volume** to the BidScout service mounted at `/data`, where the stored responses go. Without it, they are lost on every deploy and the citations break.
+3. Set these variables on the service:
+   - `BIDSCOUT_PASSWORD`: required. The server refuses to listen publicly without it, and the browser asks for it (any username).
+   - `BIDSCOUT_CONTACT`: the email sent to number 8 solutions in the User-Agent.
+4. From this folder, run `railway up`. The health check is `/api/health`. The schema is applied at start.
+
+Keep `numReplicas = 1`: the worker runs inside the one instance, and only one scan may run at a time.
+
 ## Scraping with consideration (`server/transport.ts`)
 
 - One scan at a time across the whole app (a unique index on active runs), with one request at a time.

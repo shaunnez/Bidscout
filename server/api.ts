@@ -5,6 +5,8 @@ import Fastify from "fastify";
 import { cleanText, CLEAN_VERSION } from "../shared/clean.ts";
 import { resolvePath } from "../shared/cite.ts";
 import { PARSER_VERSION } from "../shared/specs/computer.ts";
+import { passwordAccepted } from "./auth.ts";
+import { isLoopback } from "./config.ts";
 import { appContext } from "./context.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
 import { LOT_COLUMNS, LOT_JOINS, parseQuery, searchLots } from "./search.ts";
@@ -13,7 +15,21 @@ import { runWorkerLoop } from "./worker.ts";
 
 const ctx = await appContext();
 const { db, store, config } = ctx;
-const app = Fastify({ logger: { level: "warn" } });
+if (!isLoopback(config.host) && !config.password) {
+  console.error(`Refusing to listen on ${config.host} without BIDSCOUT_PASSWORD: anyone could start scans.`);
+  process.exit(1);
+}
+const app = Fastify({ logger: { level: "warn" }, trustProxy: true });
+
+app.get("/api/health", async () => {
+  await db.query("SELECT 1");
+  return { ok: true };
+});
+
+app.addHook("onRequest", async (req, reply) => {
+  if (req.url === "/api/health" || passwordAccepted(req.headers.authorization, config.password)) return;
+  reply.header("WWW-Authenticate", 'Basic realm="BidScout", charset="UTF-8"').code(401).send({ error: "Password required" });
+});
 
 const snapshotMeta = (m: Record<string, unknown>) => ({
   id: m.id,
@@ -190,8 +206,8 @@ if (fs.existsSync(dist)) {
   app.setNotFoundHandler((req, reply) => (req.url.startsWith("/api/") ? reply.code(404).send({ error: "Not found" }) : reply.sendFile("index.html")));
 }
 
-await app.listen({ port: config.apiPort, host: "127.0.0.1" });
-console.log(`BidScout API on http://127.0.0.1:${config.apiPort}`);
+await app.listen({ port: config.apiPort, host: config.host });
+console.log(`BidScout on http://${config.host}:${config.apiPort}${config.password ? " (password required)" : ""}`);
 
 if (process.env.BIDSCOUT_INLINE_WORKER !== "0") {
   console.log("Scan worker running in this process (set BIDSCOUT_INLINE_WORKER=0 to use npm run worker instead).");
