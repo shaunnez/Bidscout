@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Number8Transport, StopRunError, retryAfterMs } from "../../server/transport.ts";
+import { Number8Transport, RequestGate, StopRunError, retryAfterMs } from "../../server/transport.ts";
 
 function harness(responses: Array<() => Response | Promise<Response>>) {
   let clock = 1_000_000;
@@ -151,3 +151,64 @@ function harnessWith(concurrency: number, responses: Array<() => Response>) {
   });
   return { t };
 }
+
+test("a shared gate caps requests across transports (a refresh during a scan takes a scan slot)", async () => {
+  let clock = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const held: Array<() => void> = [];
+  const gate = new RequestGate();
+  const opts = {
+    baseUrl: "https://example.test", jitterMs: 0, random: () => 0, now: () => clock, gate,
+    sleep: async (ms: number) => { clock += ms; },
+    fetch: async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise<void>((r) => held.push(r));
+      inFlight--;
+      return new Response("{}", { headers: { "content-type": "application/json" } });
+    },
+  };
+  const scan = new Number8Transport({ ...opts, concurrency: 2 });
+  const refresh = new Number8Transport(opts);
+  assert.equal(refresh.parallelism, 2, "a refresh keeps the scan's limit");
+  const all = [scan.get("/api/a"), scan.get("/api/b"), refresh.get("/api/c")];
+  for (let i = 0; i < 50 && held.length < 2; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(held.length, 2);
+  for (let i = 0; i < 20 && held.length < 3; i++) { held.shift()?.(); await new Promise((r) => setImmediate(r)); }
+  while (held.length) { held.shift()!(); await new Promise((r) => setImmediate(r)); }
+  await Promise.all(all);
+  assert.equal(maxInFlight, 2, "never more than the shared limit");
+});
+
+test("after a 429, the retry waits for requests still in flight and goes one at a time", async () => {
+  let clock = 0;
+  let inFlight = 0;
+  const startedWith: number[] = [];
+  let slowDone: () => void = () => {};
+  let n = 0;
+  const t = new Number8Transport({
+    baseUrl: "https://example.test", concurrency: 2, jitterMs: 0, random: () => 0, now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    fetch: async (url) => {
+      startedWith.push(inFlight);
+      inFlight++;
+      try {
+        if (String(url).endsWith("/slow")) await new Promise<void>((r) => (slowDone = r));
+        else if (n++ === 0) return new Response("{}", { status: 429, headers: { "retry-after": "5" } });
+        return new Response("{}", { headers: { "content-type": "application/json" } });
+      } finally {
+        inFlight--;
+      }
+    },
+  });
+  const slow = t.get("/api/slow");
+  const fast = t.get("/api/fast");
+  for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(startedWith.length, 2, "the retry has not started while /slow is in flight");
+  slowDone();
+  await Promise.all([slow, fast]);
+  assert.equal(startedWith.length, 3);
+  assert.equal(startedWith[2], 0, "the retry started alone");
+  assert.equal(t.parallelism, 1);
+});

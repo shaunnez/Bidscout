@@ -4,13 +4,14 @@ import { loadSnapshotDoc } from "../snapshots.ts";
 import type { ObjectStore } from "../store.ts";
 import { rebuildCompStats } from "./comps.ts";
 import { ingestLot, upsertAuction } from "./ingest.ts";
+import { applyRefresh } from "./refresh.ts";
 import { recordDetail } from "./runner.ts";
 
 /**
  * Rebuilds every derived table (auctions, lots, revisions, observations, specs, terms,
  * price history) from the stored snapshots, in the order they were fetched.
  * Use after fixing how a field is read. No requests to number8.bid. Favourites, friends'
- * bids (stored responses have bidder IDs removed) and photo reads (they come from images,
+ * bids and high-bidder markers (stored responses have bidder IDs removed) and photo reads (they come from images,
  * not snapshots) are kept, and photo values are merged back in as each lot is rebuilt.
  */
 export async function replayAll(db: Db, store: ObjectStore, onProgress?: (done: number, total: number) => void) {
@@ -18,8 +19,9 @@ export async function replayAll(db: Db, store: ObjectStore, onProgress?: (done: 
   if (active.rowCount) throw new Error("A scan is running; wait for it to finish before replaying.");
   const favs = (await db.query(`SELECT user_id, lot_id, max_all_in, note, added_at FROM favourites`)).rows;
   const fbids = (await db.query(`SELECT lot_id, user_id, kind, amount, bid_at, snapshot_id, seen_at FROM friend_bids`)).rows;
+  const fhigh = (await db.query(`SELECT id, friend_high_user_id FROM lots WHERE friend_high_user_id IS NOT NULL`)).rows;
   await db.query(`TRUNCATE watchlist, favourites, friend_bids, comp_stats, spec_values, lot_observations, auction_terms, lot_revisions, lots, auctions`);
-  const snaps = (await db.query(`SELECT id, url, request_body, fetched_at FROM snapshots ORDER BY id`)).rows;
+  const snaps = (await db.query(`SELECT id, run_id, url, request_body, fetched_at FROM snapshots ORDER BY id`)).rows;
   let n = 0;
   for (const s of snaps) {
     const { doc } = await loadSnapshotDoc(db, store, s.id);
@@ -35,7 +37,11 @@ export async function replayAll(db: Db, store: ObjectStore, onProgress?: (done: 
         const d = doc as N8ItemData;
         const id = Number(form.get("item_id") ?? d.id);
         const exists = await c.query(`SELECT auction_id FROM lots WHERE id=$1`, [id]);
-        if (exists.rows[0]) await recordDetail(c, id, exists.rows[0].auction_id, s.id, d);
+        if (exists.rows[0]) {
+          await recordDetail(c, id, exists.rows[0].auction_id, s.id, d);
+          // A manual refresh (no scan run) also moved the bid and status.
+          if (s.run_id === null) await applyRefresh(c, id, s.id, d as N8ItemData & Record<string, unknown>, now);
+        }
       }
     });
     onProgress?.(++n, snaps.length);
@@ -51,6 +57,8 @@ export async function replayAll(db: Db, store: ObjectStore, onProgress?: (done: 
        SELECT $1,$2,$3,$4,$5,$6,$7 WHERE EXISTS (SELECT 1 FROM lots WHERE id=$1) ON CONFLICT DO NOTHING`,
       [b.lot_id, b.user_id, b.kind, b.amount, b.bid_at, b.snapshot_id, b.seen_at],
     );
+  // Who in the group is the high bidder can't be re-derived from redacted responses either.
+  for (const f of fhigh) await db.query(`UPDATE lots SET friend_high_user_id=$2 WHERE id=$1`, [f.id, f.friend_high_user_id]);
   await db.query(
     `UPDATE lots l SET photo_ocr_at = r.at FROM (SELECT lot_id, max(created_at) AS at FROM photo_reads GROUP BY lot_id) r WHERE r.lot_id = l.id`,
   );

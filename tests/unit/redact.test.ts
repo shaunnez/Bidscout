@@ -60,3 +60,20 @@ test("object store refuses to start on a directory it cannot write", async () =>
   fs.writeFileSync(blocker, "x");
   assert.throws(() => new ObjectStore(blocker).checkWritable(), /Cannot write stored responses/);
 });
+
+test("friendly bidders: usernames and bidder numbers are separate, and a value two members claim is ignored", async () => {
+  const { buildFriendIds, friendHighBidder, friendBids } = await import("../../server/friends.ts");
+  const ids = buildFriendIds([
+    { id: 1, n8_username: "Shaun", n8_bidder_number: "42" },
+    { id: 2, n8_username: "42", n8_bidder_number: "77" }, // username "42" clashes with member 1's number
+    { id: 3, n8_username: "sam", n8_bidder_number: null },
+    { id: 4, n8_username: "SAM", n8_bidder_number: null }, // same username twice
+  ]);
+  assert.equal(friendHighBidder(ids, { highbidder_username: "shaun" }), 1);
+  assert.equal(friendHighBidder(ids, { buyer_number: "77" }), 2);
+  assert.equal(friendHighBidder(ids, { high_bidder: "42" }), null, "ambiguous: dropped");
+  assert.equal(friendHighBidder(ids, { highbidder_username: "sam" }), null, "claimed twice: dropped");
+  assert.equal(friendHighBidder(ids, { highbidder_username: "77" }), null, "a bidder number is not a username");
+  assert.equal(friendHighBidder(ids, { highbidder_username: "shaun", buyer_number: "77" }), null, "fields disagree");
+  assert.deepEqual(friendBids(ids, [{ user_name: "Shaun", bid: "20" }, { user_name: "stranger", bid: "25" }]).map((b) => b.userId), [1]);
+});

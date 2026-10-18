@@ -28,6 +28,8 @@ function site() {
     lot2Desc: "Type &#8211; AIO Make &#8211; HP Model &#8211; EliteOne 800 G6 Specs &#8211; Intel Core i5 10500,3.1GHz,8GB,1TB SSD ,27 inch Faults &#8211; ITAD Comments &#8211; -",
     lot1Bid: "10.00",
     lot1Ends: inDays(2),
+    /** The high bidder the lot page shows (raw, before redaction). */
+    itemHigh: "someone",
     calls: [] as string[],
   };
   const lots = () => ({
@@ -69,6 +71,7 @@ function site() {
             category_name: "IT & Equipment", buyer_premium: "15.000", current_bid: `${bid}.00`, bid_count: "21", ends: unix(inDays(-30 + k)) })) });
       if (p === "/api/ItemData")
         return respond({ id: String(form.item_id), auction_id: "90",
+          ...(String(form.item_id) === "501" ? { current_bid: state.lot1Bid, bid_count: "3", end_time_unix: unix(state.lot1Ends), highbidder_username: state.itemHigh } : {}),
           images: [{ image_url: "https://cdn.test/a.jpg" }, { image_url: "https://cdn.test/b.jpg" }],
           bid_history: [{ bid: "10.00", time_of_bid: "2026-10-16T03:47:43+1300", user_name: "bidder9", buyer_number: "12" }],
           payment_happens: "<p><strong>BIDS IN THIS SALE DO NOT INCLUDE GST AND HAVE A 15% + GST BUYER'S PREMIUM</strong></p><p>the buyer's premium of 15% is added ($150) and then GST of 15% ($172.50) is added. PAYMENT DUE Full payment by 12pm Friday.</p>" });
@@ -171,19 +174,33 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   const third = (await db.query(`SELECT details_read FROM scan_runs ORDER BY id DESC LIMIT 1`)).rows[0];
   assert.equal(third.details_read, 1, "only the changed lot's page is re-read");
 
+  // Refresh now: an outsider has overtaken Alex. One request; the bid moves and Alex is no longer shown as high bidder.
+  const { refreshLot } = await import("../../server/scan/refresh.ts");
+  state.lot1Bid = "60.00";
+  state.itemHigh = "outsider";
+  const beforeRefresh = transport.stats.requests;
+  await refreshLot(db, store, transport, 501, new Date(clock.getTime() + 600_000));
+  assert.equal(transport.stats.requests, beforeRefresh + 1);
+  const refreshed = (await db.query(`SELECT current_bid, friend_high_user_id FROM lots WHERE id=501`)).rows[0];
+  assert.equal(Number(refreshed.current_bid), 60);
+  assert.equal(refreshed.friend_high_user_id, null, "the marker is cleared when a friend is no longer high bidder");
+  state.itemHigh = "someone";
+
   // After close, the final bid is recorded from the snapshot that showed it closed.
   clock = inDays(3);
   await startRun(db, "live");
   await workOneRun(deps);
   const closed = (await db.query(`SELECT status, final_bid, outcome_snapshot_id FROM lots WHERE id=501`)).rows[0];
   assert.equal(closed.status, "closed");
-  assert.equal(closed.final_bid, 45);
+  assert.equal(closed.final_bid, 60);
   assert.ok(closed.outcome_snapshot_id);
 
   // Replaying the stored responses rebuilds the same state without any requests.
   const snapshotOf = async () => (await db.query(
-    `SELECT id, status, final_bid, ends_at, machine_key, ram_gb, faults, current_revision_id IS NOT NULL AS has_rev FROM lots ORDER BY id`)).rows;
+    `SELECT id, status, current_bid, final_bid, ends_at, machine_key, ram_gb, faults, friend_high_user_id,
+            current_revision_id IS NOT NULL AS has_rev FROM lots ORDER BY id`)).rows;
   const before = await snapshotOf();
+  assert.equal(before.find((l) => l.id === 501).friend_high_user_id, alex);
   const obsBefore = (await db.query(`SELECT count(*)::int AS n FROM lot_observations`)).rows[0].n;
   const requestsBefore = transport.stats.requests;
   await replayAll(db, store);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type ScanRun } from "./api.ts";
+import { account, api, type ScanRun, type ScanSettings } from "./api.ts";
 import { useNow } from "./Feed.tsx";
 import { nzDate } from "./format.ts";
 
@@ -13,6 +13,10 @@ export function Scans({ scan }: { scan: { run: ScanRun | null; active: boolean; 
   const [maxPages, setMaxPages] = useState("200");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [settings, setSettings] = useState<ScanSettings | null>(null);
+  useEffect(() => {
+    account.settings().then((r) => setSettings(r.scan)).catch(() => {});
+  }, []);
   useEffect(() => {
     api.scans().then((r) => setRuns(r.runs)).catch(() => {});
   }, [scan.run?.state, scan.run?.pages_read, scan.run?.details_read]);
@@ -38,7 +42,12 @@ export function Scans({ scan }: { scan: { run: ScanRun | null; active: boolean; 
       <div className="scan-head">
         <div>
           <h1>Scans</h1>
-          <p className="sub">Scans only run when you start them. One at a time, at least 1.2 s between requests, slowing down when number8.bid is slow, and stopping if it asks.</p>
+          <p className="sub">
+            {settings?.scheduleEnabled
+              ? `Live auctions are scanned every ${settings.liveEveryHours} hour${settings.liveEveryHours === 1 ? "" : "s"}${settings.historyWeekly ? ", plus a weekly past-sales top-up" : ""}, and whenever you start one. `
+              : "Scans only run when you start them (schedule off in Settings). "}
+            One scan at a time, at most {settings?.concurrency ?? 1} request{(settings?.concurrency ?? 1) === 1 ? "" : "s"} at once with starts at least {(settings?.concurrency ?? 1) > 1 ? "0.3" : "1.2"} s apart, dropping to one at a time when number8.bid is slow, and stopping if it asks.
+          </p>
         </div>
       </div>
 

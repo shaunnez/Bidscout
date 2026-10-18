@@ -378,8 +378,10 @@ async function historyStep(ctx: Ctx, cur: HistoryCursor): Promise<boolean> {
       });
       return finishPartial(ctx);
     }
-    // Up to `parallelism` pages fetched at once, stored in page order.
-    const want = run.options.maxPages ? Math.min(transport.parallelism, run.options.maxPages - cur.pagesThisRun) : transport.parallelism;
+    // Up to `parallelism` pages fetched at once, stored in page order. A top-up that stops at the
+    // first page with nothing new reads one page at a time, so it never fetches past that page.
+    const width = run.options.untilKnown ? 1 : transport.parallelism;
+    const want = run.options.maxPages ? Math.min(width, run.options.maxPages - cur.pagesThisRun) : width;
     const pages = Array.from({ length: Math.max(1, want) }, (_, k) => cur.page + k);
     const snaps = await Promise.all(
       pages.map(async (pg) => saveSnapshot<N8LotsPage>(db, store, run.id, await n8.pastSales(transport, pg, { category: run.options.category, keyword: run.options.keyword }), ctx.now())),
@@ -473,6 +475,8 @@ export async function workOneRun(deps: WorkerDeps): Promise<boolean> {
       }
     }
   } catch (e) {
+    // Parallel batches reject on the first failure; stop their sibling requests too.
+    abort.abort();
     if (e instanceof LeaseLost || (e instanceof StopRunError && e.reason === "aborted")) {
       ctx.log(`Run ${run.id} stopped: ${(e as Error).message}`);
     } else {

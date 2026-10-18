@@ -363,3 +363,5 @@ CREATE TRIGGER photo_values_immutable BEFORE UPDATE ON photo_values
   FOR EACH ROW EXECUTE FUNCTION bidscout_immutable();
 
 ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS photos_read int NOT NULL DEFAULT 0;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at timestamptz;

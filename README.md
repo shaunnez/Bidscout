@@ -61,12 +61,14 @@ Keep `numReplicas = 1`: the worker runs inside the one instance, and only one sc
 
 - One scan at a time across the whole app (a unique index on active runs).
 - Up to 4 requests in flight (Settings → Requests at a time, 1–4), with request starts at least 0.3 s apart. One at a time means at least 1.2 s between requests plus up to 0.4 s of jitter (`BIDSCOUT_MIN_INTERVAL_MS` can raise it, never below 1 s).
-- Any slow reply (over 3 s) or 429/503 drops the scan to one request at a time for the rest of the run.
+- Every request the app makes to number8.bid shares one set of slots and spacing (`RequestGate`), so **Refresh now** during a scan takes one of the scan's slots rather than adding to them. This holds because the worker runs inside the one instance.
+- Any slow reply (over 3 s) or 429/503 drops the scan to one request at a time for the rest of the run. If one parallel request stops the run, the others are cancelled.
+- A weekly past-sales top-up reads one page at a time, so it stops at the first page with nothing new without fetching past it.
 - After a reply that took over 3 s, the next gap is twice that reply's time (capped at 30 s).
 - Past sales are read 60 to a page, the largest page the site's own menu offers. A 200-row page took 17 s for their server.
 - **Retries:**
   - Network errors, timeouts, 408, 425 and 5xx: backoff of 2 s, 4 s, 8 s and 16 s (plus jitter), at most 4 retries.
-  - 429 and 503: wait for `Retry-After` (default 60 s, at most 15 min). After 3 of these in one run, the run stops as *partial* and can be continued later.
+  - 429 and 503: nothing starts until `Retry-After` has passed (default 60 s, at most 15 min), and the retry waits for requests still in flight, then goes one at a time. After 3 of these in one run, the run stops as *partial* and can be continued later.
   - An HTML page where JSON was expected (a challenge or login page) stops the run.
 - Only public `/api/` and `/auxiliary/` paths. `/admin` and `/myaccount` (disallowed in robots.txt) are refused in code.
 - Photos load from number8's CDN in your browser when you open a lot; the scanner doesn't download them.

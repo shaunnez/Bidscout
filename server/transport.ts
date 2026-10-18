@@ -14,6 +14,8 @@
  *   After `maxThrottles` of those in one run the transport stops the run instead of pushing on.
  * - An HTML page where JSON was expected (a challenge or login page) stops the run.
  * - Only public API paths; robots.txt's /admin and /myaccount are refused outright.
+ * - Every transport in a process shares one `RequestGate`, so a manual refresh during a scan
+ *   takes one of the scan's slots and keeps the same spacing, rather than adding to them.
  */
 
 export interface FetchResult {
@@ -77,6 +79,8 @@ export interface TransportOptions {
   random?: () => number;
   signal?: AbortSignal;
   onWait?: (ms: number, why: string) => void;
+  /** Shared slots and spacing. Without one, the transport gets its own. */
+  gate?: RequestGate;
 }
 
 /** Closest two request starts may be when running more than one at a time. */
@@ -109,13 +113,45 @@ export function retryAfterMs(header: string | null, now: number): number {
   return Math.min(Math.max(ms, 5_000), 15 * 60_000);
 }
 
+/**
+ * Request slots and start spacing shared by every transport in a process. A scan sets the
+ * limit when it starts (its concurrency setting); anything else, such as a manual refresh,
+ * uses whatever limit is current. A slow reply or a 429/503 drops it to one for everyone.
+ */
+export class RequestGate {
+  limit = 1;
+  inFlight = 0;
+  nextAt = 0;
+  private waiting: Array<() => void> = [];
+
+  configure(concurrency: number) {
+    this.limit = Math.min(4, Math.max(1, Math.round(concurrency)));
+  }
+
+  slowDown() {
+    this.limit = 1;
+  }
+
+  /** No request may start before `at`. */
+  holdUntil(at: number) {
+    this.nextAt = Math.max(this.nextAt, at);
+  }
+
+  async acquire() {
+    while (this.inFlight >= this.limit) await new Promise<void>((r) => this.waiting.push(r));
+    this.inFlight++;
+  }
+
+  release() {
+    this.inFlight--;
+    this.waiting.shift()?.();
+  }
+}
+
 export class Number8Transport implements Transport {
   readonly stats: TransportStats = { requests: 0, retries: 0, throttles: 0 };
-  private nextAt = 0;
-  private limit: number;
-  private inFlight = 0;
-  private waiting: Array<() => void> = [];
-  private o: Required<Omit<TransportOptions, "signal" | "onWait" | "contact" | "concurrency">> &
+  private gate: RequestGate;
+  private o: Required<Omit<TransportOptions, "signal" | "onWait" | "contact" | "concurrency" | "gate">> &
     Pick<TransportOptions, "signal" | "onWait" | "contact">;
 
   constructor(opts: TransportOptions) {
@@ -133,33 +169,21 @@ export class Number8Transport implements Transport {
       ...opts,
     };
     this.o.minIntervalMs = Math.max(1000, this.o.minIntervalMs);
-    this.limit = Math.min(4, Math.max(1, Math.round(opts.concurrency ?? 1)));
+    this.gate = opts.gate ?? new RequestGate();
+    // A shared gate keeps its limit unless this transport brings one (a scan starting).
+    if (!opts.gate || opts.concurrency !== undefined) this.gate.configure(opts.concurrency ?? 1);
   }
 
   get parallelism() {
-    return this.limit;
-  }
-
-  /** Drop to one request at a time for the rest of this transport's life. */
-  private slowDown() {
-    this.limit = 1;
-  }
-
-  private async acquire() {
-    while (this.inFlight >= this.limit) await new Promise<void>((r) => this.waiting.push(r));
-    this.inFlight++;
-  }
-
-  private release() {
-    this.inFlight--;
-    this.waiting.shift()?.();
+    return this.gate.limit;
   }
 
   /** Reserves the next start time, so concurrent callers are spaced out. */
   private reserveStart(): number {
-    const at = Math.max(this.o.now(), this.nextAt);
-    const spacing = this.limit > 1 ? Math.max(MIN_PARALLEL_SPACING_MS, Math.floor(this.o.minIntervalMs / this.limit)) : 0;
-    this.nextAt = at + spacing;
+    const g = this.gate;
+    const at = Math.max(this.o.now(), g.nextAt);
+    const spacing = g.limit > 1 ? Math.max(MIN_PARALLEL_SPACING_MS, Math.floor(this.o.minIntervalMs / g.limit)) : 0;
+    g.nextAt = at + spacing;
     return at - this.o.now();
   }
 
@@ -193,11 +217,11 @@ export class Number8Transport implements Transport {
   private async request(method: string, path: string, body: string | null): Promise<FetchResult> {
     if (DISALLOWED.test(path) || !ALLOWED.test(path))
       throw new StopRunError(`Refusing to fetch ${path}: not a public API path`, "blocked");
-    await this.acquire();
+    await this.gate.acquire();
     try {
       return await this.attempt(method, path, body);
     } finally {
-      this.release();
+      this.gate.release();
     }
   }
 
@@ -239,8 +263,8 @@ export class Number8Transport implements Transport {
       }
       if (this.o.signal?.aborted) throw new StopRunError("Run was stopped", "aborted");
       const elapsedMs = this.o.now() - started;
-      if (elapsedMs > 3000) this.slowDown();
-      if (this.limit === 1) this.nextAt = Math.max(this.nextAt, this.o.now() + this.gap(elapsedMs));
+      if (elapsedMs > 3000) this.gate.slowDown();
+      if (this.gate.limit === 1) this.gate.holdUntil(this.o.now() + this.gap(elapsedMs));
 
       const canRetry = attempt <= this.o.maxRetries;
       if (failure || !res || !buf) {
@@ -250,7 +274,7 @@ export class Number8Transport implements Transport {
       }
       if (res.status === 429 || res.status === 503) {
         this.stats.throttles++;
-        this.slowDown();
+        this.gate.slowDown();
         if (this.stats.throttles >= this.o.maxThrottles)
           throw new StopRunError(
             `number8.bid asked us to slow down ${this.stats.throttles} times; stopping this run`,
@@ -258,7 +282,15 @@ export class Number8Transport implements Transport {
           );
         const ms = retryAfterMs(res.headers.get("retry-after"), this.o.now());
         this.stats.retries++;
-        await this.wait(ms, `HTTP ${res.status}: waiting as asked`);
+        // Nobody starts until the wait is over, and this request gives up its slot: the retry
+        // queues again, so it waits for requests still in flight before going one at a time.
+        this.gate.holdUntil(this.o.now() + ms);
+        this.gate.release();
+        try {
+          await this.wait(ms, `HTTP ${res.status}: waiting as asked`);
+        } finally {
+          await this.gate.acquire();
+        }
         continue;
       }
       if (RETRYABLE.has(res.status)) {
