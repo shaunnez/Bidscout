@@ -193,7 +193,8 @@ export async function loadLookup(db: Db, id: number) {
 /** Is the button usable right now, and if not, why not. Every button lookup in the last 24 hours counts, failed or running. */
 export async function tradeMeStatus(db: Pick<Db, "query">, ways: { firecrawl: FirecrawlClient | null; searchers?: TradeMeSearcher[] }) {
   const s = await getTradeMeSettings(db as Db);
-  const used = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE source='trademe' AND origin='button' AND created_at > now() - interval '24 hours'`)).rows[0].n);
+  // Trade Me and new-price lookups share the limits.
+  const used = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE source IN ('trademe','newprice') AND origin='button' AND created_at > now() - interval '24 hours'`)).rows[0].n);
   const ready = !!ways.firecrawl || !!ways.searchers?.length;
   const reason = !ready ? "Needs Chromium (in the Docker image) or a Firecrawl API key (FIRECRAWL_API_KEY)." : !s.enabled ? "An admin can turn Trade Me prices on in Settings." : used >= s.dailyLimit ? `The group's ${s.dailyLimit} lookups for the last 24 hours are used up.` : null;
   // Pasted listing pages are read through Firecrawl only.
@@ -203,22 +204,22 @@ export async function tradeMeStatus(db: Pick<Db, "query">, ways: { firecrawl: Fi
 /** May an automatic lookup start now (server/autoprice.ts), and if not, why not. */
 export async function autoStatus(db: Pick<Db, "query">) {
   const s = await getTradeMeSettings(db as Db);
-  const used = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE source='trademe' AND origin='auto' AND created_at > now() - interval '24 hours'`)).rows[0].n);
+  const used = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE source IN ('trademe','newprice') AND origin='auto' AND created_at > now() - interval '24 hours'`)).rows[0].n);
   const reason = !s.enabled ? "Trade Me prices are off." : !s.autoEnabled ? "Automatic lookups are off." : used >= s.autoDailyLimit ? `The ${s.autoDailyLimit} automatic lookups for the last 24 hours are used up.` : null;
   return { available: !reason, reason, used, dailyLimit: s.autoDailyLimit };
 }
 
-/** The newest successful lookup this lot ran or reused. */
-export async function latestForLot(db: Db, lotId: number) {
+/** The newest successful lookup this lot ran or reused: Trade Me, or with `source` a new-price one. */
+export async function latestForLot(db: Db, lotId: number, source: "trademe" | "newprice" = "trademe") {
   const r = await db.query(
     `SELECT pl.id FROM price_lookup_lots k JOIN price_lookups pl ON pl.id = k.lookup_id
-     WHERE k.lot_id = $1 AND pl.status = 'ok' ORDER BY k.used_at DESC LIMIT 1`,
-    [lotId],
+     WHERE k.lot_id = $1 AND pl.status = 'ok' AND pl.source = $2 ORDER BY k.used_at DESC LIMIT 1`,
+    [lotId, source],
   );
   return r.rows[0] ? loadLookup(db, Number(r.rows[0].id)) : null;
 }
 
-const linkLot = (db: Db, lookupId: number, lotId: number | null) =>
+export const linkLot = (db: Db, lookupId: number, lotId: number | null) =>
   lotId === null
     ? Promise.resolve()
     : db.query(`INSERT INTO price_lookup_lots (lookup_id, lot_id) VALUES ($1,$2) ON CONFLICT (lookup_id, lot_id) DO UPDATE SET used_at = now()`, [lookupId, lotId]);

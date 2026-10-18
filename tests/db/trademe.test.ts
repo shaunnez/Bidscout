@@ -6,6 +6,8 @@ import { parseRobots } from "../../server/robots.ts";
 import type { TradeMeSearcher } from "../../server/tmsearch.ts";
 import { autoPriceTick, autoProgress } from "../../server/autoprice.ts";
 import { parseQuery, searchLots } from "../../server/search.ts";
+import { newPriceLookup } from "../../server/newprice.ts";
+import type { ParallelSearch } from "../../server/parallel.ts";
 import { getTradeMeSettings, saveTradeMeSettings } from "../../server/settings.ts";
 import { failInterruptedLookups, latestForLot, loadLookup, tradeMeLookup, tradeMeStatus } from "../../server/trademe.ts";
 
@@ -305,7 +307,7 @@ test("Automatic prices: open IT lots only, one search per shared query, own dail
     db.query(`INSERT INTO lots (id, auction_id, title, device_type, status, is_it, make, model, ends_at) VALUES ($1, 77, $2, $3, $4, $5, $6, $7, now() + interval '1 day')`,
       [id, title, device, status, isIt, make, model]);
   // Only this test's lots are open IT lots (the pipeline test leaves some behind).
-  await db.query(`UPDATE lots SET status='closed' WHERE is_it AND status='open'`);
+  await db.query(`UPDATE lots SET status='closed' WHERE status='open'`);
   await lot(7001, "Dell Latitude 5420 Laptop", "laptop", "Dell", "Latitude 5420");
   await lot(7002, "Dell Latitude 5420 Laptop (2)", "laptop", "Dell", "Latitude 5420");
   await lot(7003, "HP EliteDesk 800 G4 Desktop", "desktop", "HP", "EliteDesk 800 G4");
@@ -422,5 +424,68 @@ test("Against Trade Me: median buy-now price, faulty listings left out, % now an
   assert.deepEqual([b.id, b.tm_pct], [7101, 119], "sorted cheapest against Trade Me first");
   const opp = await searchLots(db, parseQuery({ tm: "opp" }), user);
   assert.deepEqual(opp.items.map((l: { id: number }) => l.id).filter((id: number) => id >= 7100 && id <= 7101), [7100], "only lots at 70% or less");
+  await db.end();
+});
+
+test("New price in NZ: shop prices quoted, cached 7 days, on cards with the wholesale price; automatic for products", async () => {
+  const db = connect(url);
+  await migrate(db);
+  await db.query(`UPDATE lots SET status='closed' WHERE status='open'`);
+  await db.query(`INSERT INTO auctions (id, title) VALUES (78, 'Solar') ON CONFLICT DO NOTHING`);
+  const lot = (id: number, title: string, description: string, bid: number) =>
+    db.query(`INSERT INTO lots (id, auction_id, title, description, status, is_it, current_bid, bid_count, buyer_premium, ends_at)
+              VALUES ($1, 78, $2, $3, 'open', false, $4, 1, 15, now() + interval '2 days')`, [id, title, description, bid]);
+  await lot(7200, "EPEVER Pure Sine Wave Inverter", "EPEVER Pure Sine Wave Inverter Model – SHI2000-22(AU)", 100);
+  await lot(7201, "EPEVER Pure Sine Wave Inverter (2)", "EPEVER Pure Sine Wave Inverter Model – SHI2000-22(AU)", 300);
+  await lot(7202, "Midj Bold Mirror - Wholesale $4,950.00", "Mirror", 100);
+  await lot(7203, "Pallet Lot of Christmas Products", "Assorted", 10);
+  const searches: string[][] = [];
+  const search: ParallelSearch = {
+    async search(_objective, queries) {
+      searches.push(queries);
+      return [
+        { url: "https://www.solarshop.co.nz/epever", title: "EPEVER SHI2000", excerpts: ["EPEVER SHI2000-22 inverter. Was $1,099.00 Now $949.00"] },
+        { url: "https://www.solarshop.co.nz/epever-2", title: "dup shop", excerpts: ["EPEVER SHI2000-22 $1.00"] },
+        { url: "https://powerstore.nz/shi2000", title: "Power Store", excerpts: ["EPEVER SHI2000-22 Pure Sine — $1,051.00"] },
+        { url: "https://www.ebay.com/shi2000", title: "eBay", excerpts: ["EPEVER SHI2000-22 $400"] },
+      ];
+    },
+  };
+  const user = (await db.query(`INSERT INTO users (username, display_name, password_hash) VALUES ('newprice','NP','x') RETURNING id`)).rows[0].id;
+  await saveTradeMeSettings(db, { enabled: true, dailyLimit: 1000, autoEnabled: false }, user);
+  const r = await newPriceLookup({ db, parallel: search }, { lotId: 7200, userId: user, query: "EPEVER SHI2000-22" });
+  assert.deepEqual(r.items.map((i: { listing_id: string; price: string }) => [i.listing_id, Number(i.price)]), [["solarshop.co.nz", 949], ["powerstore.nz", 1051]], "one price per NZ shop");
+  const i0 = r.items[0];
+  assert.equal(i0.excerpt.slice(i0.quote_start, i0.quote_end), "$949.00");
+  assert.equal((await newPriceLookup({ db, parallel: search }, { lotId: 7201, userId: user, query: "EPEVER SHI2000-22" })).cached, true);
+  assert.equal(searches.length, 1, "the second lot reuses the answer");
+  assert.equal((await latestForLot(db, 7201, "newprice"))?.id, r.id);
+  assert.equal(await latestForLot(db, 7201), null, "not a Trade Me answer");
+
+  const res = await searchLots(db, parseQuery({ tm: "1", sort: "tm" }), user);
+  const a = res.items.find((l: { id: number }) => l.id === 7200);
+  assert.deepEqual([a.new_n, a.new_mid, a.new_pct_now], [2, 1000, 13], "all-in $132.25 is 13% of the $1,000 median");
+  assert.ok(a.opp_score <= 1, "under 40% of new: an opportunity");
+  const mirror = (await searchLots(db, parseQuery({ q: "Midj Bold Mirror" }), user)).items[0];
+  assert.deepEqual([mirror.list_price, mirror.list_quote, mirror.list_rrp, mirror.list_pct_now], [4950, "Wholesale $4,950.00", false, 3]);
+  assert.equal(mirror.title.slice(mirror.list_start, mirror.list_start + mirror.list_quote.length), mirror.list_quote, "quoted from the title");
+
+  // Automatic: Trade Me for every lot worth pricing, new prices for products with a model; not the pallet lot.
+  await saveTradeMeSettings(db, { autoEnabled: true, autoDailyLimit: 100 }, null);
+  const tmSearched: string[] = [];
+  const parallel: TradeMeSearcher = {
+    name: "parallel",
+    async search(u) {
+      tmSearched.push(decodeURIComponent(u.split("search_string=")[1]!));
+      return { cards: [], pageSha: "", status: 200, text: "Showing 0 results" };
+    },
+  };
+  searches.length = 0;
+  await db.query(`DELETE FROM price_lookup_lots WHERE lot_id IN (7200, 7201)`);
+  await autoPriceTick({ db, parallel, search, gapMs: 0, sleep: async () => {} });
+  assert.deepEqual(tmSearched.sort(), ["EPEVER SHI2000-22", "Midj Bold Mirror"], "pallet lots are skipped");
+  assert.equal(searches.length, 0, "the shop answer is still fresh (7 days), so no new search");
+  assert.equal((await latestForLot(db, 7201, "newprice"))?.id, r.id, "relinked from the saved answer");
+  await saveTradeMeSettings(db, { autoEnabled: false }, null);
   await db.end();
 });
