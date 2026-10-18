@@ -13,6 +13,19 @@ export const sha256 = (b: Buffer | string) => crypto.createHash("sha256").update
 export class ObjectStore {
   constructor(private root: string) {}
 
+  /** Fails fast, with the reason, if responses can't be stored (e.g. a volume the app can't write to). */
+  checkWritable() {
+    const dir = path.join(this.root, "objects");
+    const probe = path.join(dir, `.write-check-${process.pid}`);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(probe, "ok");
+      fs.unlinkSync(probe);
+    } catch (e) {
+      throw new Error(`Cannot write stored responses to ${dir}: ${(e as Error).message}`);
+    }
+  }
+
   private file(hash: string) {
     return path.join(this.root, "objects", hash.slice(0, 2), `${hash}.gz`);
   }

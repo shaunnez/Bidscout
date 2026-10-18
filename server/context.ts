@@ -13,6 +13,7 @@ export async function appContext() {
     throw new Error(`Could not reach Postgres at ${where} (${(e as Error).message}). On Railway, set DATABASE_URL to \${{Postgres.DATABASE_URL}}.`);
   }
   const store = new ObjectStore(config.dataDir);
+  store.checkWritable();
   const makeTransport = (signal: AbortSignal) =>
     new Number8Transport({ baseUrl: config.baseUrl, contact: config.contact, minIntervalMs: config.minIntervalMs, signal });
   return { config, db, store, makeTransport };

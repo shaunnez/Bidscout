@@ -40,3 +40,15 @@ test("config: empty variables count as unset, so Railway's DATABASE_URL and PORT
   assert.equal(c.apiPort, 8080);
   assert.equal(loadConfig({ BIDSCOUT_MIN_INTERVAL_MS: "200" }).minIntervalMs, 1000);
 });
+
+test("object store refuses to start on a directory it cannot write", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { ObjectStore } = await import("../../server/store.ts");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bidscout-store-"));
+  new ObjectStore(dir).checkWritable();
+  const blocker = path.join(dir, "file");
+  fs.writeFileSync(blocker, "x");
+  assert.throws(() => new ObjectStore(blocker).checkWritable(), /Cannot write stored responses/);
+});
