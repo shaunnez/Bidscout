@@ -156,6 +156,10 @@ export interface TradeMeLookup {
   error: string | null;
   searched: number;
   found: number;
+  candidates: number | null;
+  blocked: number | null;
+  /** The web searches run; empty for pasted links; null for lookups saved before this was recorded (web searches). */
+  queries: string[] | null;
   created_at: string;
   items: TradeMeItem[];
   cached?: boolean;
@@ -298,6 +302,7 @@ export const api = {
   auctions: (scope: "live" | "closed") => call<{ auctions: Auction[] }>(`/api/auctions?scope=${scope}`),
   auction: (id: number) => call<Auction>(`/api/auctions/${id}`),
   tradeMe: (id: number, query: string) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ query }) }),
+  tradeMeLinks: (id: number, links: string[]) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ links }) }),
   refreshLot: (id: number) => call<{ ok: true }>(`/api/lots/${id}/refresh`, { method: "POST", body: "{}" }),
 };
 

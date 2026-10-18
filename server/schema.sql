@@ -439,3 +439,8 @@ CREATE TABLE IF NOT EXISTS price_lookup_lots (
   PRIMARY KEY (lookup_id, lot_id)
 );
 CREATE INDEX IF NOT EXISTS price_lookup_lots_lot ON price_lookup_lots (lot_id, used_at DESC);
+
+-- What a lookup searched for, and how many Trade Me listings the search turned up.
+ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS candidates int;
+ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS queries text[];
+ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS blocked int;

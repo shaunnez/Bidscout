@@ -133,3 +133,17 @@ test("a Buy Now price is kept only when it is written on the page, with its own 
   assert.equal(made.buy_now, null);
   assert.equal(made.buy_now_excerpt, null);
 });
+
+test("the wider search keeps make and model, drops CPU, memory and storage words", async () => {
+  const { broaderQuery } = await import("../../server/trademe.ts");
+  assert.equal(broaderQuery("HP Elite Mini 600 G9 i5-12500T"), "HP Elite Mini 600 G9");
+  assert.equal(broaderQuery("Lenovo ThinkPad T14 Gen 2 i5-1145G7"), "Lenovo ThinkPad T14 Gen 2");
+  assert.equal(broaderQuery("HP EliteBook 840 G5"), null, "nothing to drop: no second search");
+  assert.equal(broaderQuery("i5-12400 16GB 500GB SSD desktop"), null, "a clone's parts leave nothing to search for");
+  assert.equal(broaderQuery("Lenovo ThinkPad T14 Ryzen 5 4650U"), "Lenovo ThinkPad T14", "whole Ryzen names go");
+  assert.equal(broaderQuery("Apple MacBook Air Apple M1"), "Apple MacBook Air");
+  assert.equal(broaderQuery("Apple MacBook Pro 14 Apple M2 Pro"), "Apple MacBook Pro 14");
+  assert.equal(broaderQuery("Dell Latitude 7450 Core Ultra 7 165U"), "Dell Latitude 7450");
+  assert.equal(broaderQuery("Dell PowerEdge R740 Xeon Silver 4110"), "Dell PowerEdge R740");
+  assert.equal(broaderQuery("HP ProDesk 400 G4 Celeron G3930"), "HP ProDesk 400 G4");
+});

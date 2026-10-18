@@ -202,14 +202,48 @@ const linkLot = (db: Db, lookupId: number, lotId: number | null) =>
 
 const running = new Map<string, Promise<unknown>>();
 
-/** Runs (or reuses) a Trade Me lookup for `query`. */
-export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | null; userId: number; query: string }): Promise<any> {
+/** A shorter search: drops CPU, memory and storage words, keeping the make and model (at most 5 words). */
+export function broaderQuery(q: string): string | null {
+  // Whole processor names first (several words each), then single CPU, memory and storage words.
+  const stripped = q
+    .replace(/\b(?:AMD\s+)?Ryzen\s+\d+(?:\s+PRO)?(?:\s+\d{4}\w*)?/gi, " ")
+    .replace(/\bApple\s+M\d(?:\s+(?:Pro|Max|Ultra))?\b/gi, " ")
+    .replace(/\b(?:Intel\s+)?Core\s+Ultra\s+\d(?:\s+\d{3}\w*)?/gi, " ")
+    .replace(/\b(?:Intel\s+)?Xeon(?:\s+(?:Silver|Gold|Bronze|Platinum|E\d-?\w*|W-?\w*))?(?:\s+\d{4}\w*)?/gi, " ")
+    .replace(/\b(?:Intel\s+)?(?:Celeron|Pentium)(?:\s+\w*\d\w*)?/gi, " ");
+  const words = stripped.trim().split(/\s+/).filter((w) => !/^(?:i[3579]-?\w*|ryzen|core|celeron|pentium|xeon|\d+(?:\.\d+)?\s?(?:gb|tb)|ssd|hdd|nvme|emmc|desktop|laptop|tablet|aio)$/i.test(w));
+  const b = words.slice(0, 5).join(" ");
+  return b.split(" ").length >= 2 && queryKey(b) !== queryKey(q) ? b : null;
+}
+
+type Target = { url: string; listingId: string };
+type Plan = { kind: "search"; query: string } | { kind: "links"; targets: Target[] };
+
+/**
+ * Runs (or reuses) a Trade Me lookup: a web search for `query`, or the listing pages in `links`
+ * (pasted by the person from their own Trade Me search, when web search doesn't find them).
+ */
+export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | null; userId: number; query?: string; links?: string[] }): Promise<any> {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const query = input.query.replace(/\s+/g, " ").trim().slice(0, 120);
-  const key = queryKey(query);
-  if (key.length < 3) throw new LookupError("Search text is too short.", 400);
+  let query: string;
+  let key: string;
+  let plan: Plan;
+  if (input.links?.length) {
+    const seen = new Set<string>();
+    const targets = input.links.map((u) => listingUrl(String(u).trim())).filter((l): l is Target => !!l && !seen.has(l.listingId) && !!seen.add(l.listingId));
+    if (!targets.length) throw new LookupError("Paste links to Trade Me marketplace listings (they contain /listing/ and a number).", 400);
+    if (targets.length > MAX_LISTINGS) throw new LookupError(`Up to ${MAX_LISTINGS} listings at a time.`, 400);
+    query = `Listings ${targets.map((t) => t.listingId).join(", ")}`;
+    key = `links:${targets.map((t) => t.listingId).sort().join(",")}`;
+    plan = { kind: "links", targets };
+  } else {
+    query = String(input.query ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+    key = queryKey(query);
+    if (key.length < 3) throw new LookupError("Search text is too short.", 400);
+    plan = { kind: "search", query };
+  }
 
   const cached = (await db.query(
     `SELECT id FROM price_lookups WHERE source='trademe' AND query_key=$1 AND status='ok' AND created_at > $2::timestamptz - make_interval(days => $3)
@@ -225,7 +259,7 @@ export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | n
     return tradeMeLookup(deps, input);
   }
   const id = await reserve(deps, input, query, key, now);
-  const work = run(deps, id, query, sleep, now);
+  const work = run(deps, id, plan, sleep, now);
   running.set(key, work);
   try {
     await work;
@@ -253,25 +287,48 @@ async function reserve(deps: LookupDeps, input: { lotId: number | null; userId: 
   });
 }
 
-async function run(deps: LookupDeps, id: number, query: string, sleep: (ms: number) => Promise<void>, now: () => Date) {
+async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number) => Promise<void>, now: () => Date) {
   const { db } = deps;
   const fc = deps.firecrawl!;
   const items: TradeMeItem[] = [];
   let credits = 0;
   let searched = 0;
+  let candidates = 0;
+  let blocked = 0;
+  const queries: string[] = [];
   let error: string | null = null;
   try {
     const robots = await deps.robots();
-    const found = await fc.search(query, { limit: 10, includeDomains: ["trademe.co.nz"], country: "NZ" });
-    credits += found.credits ?? 0;
-    searched = found.results.length;
-    const seen = new Set<string>();
-    const targets = found.results
-      .map((r) => listingUrl(r.url))
-      .filter((l): l is { url: string; listingId: string } => !!l && !seen.has(l.listingId) && !!seen.add(l.listingId))
-      // Each identity is checked on its own (BidScout asks, Firecrawl fetches); all must be allowed.
-      .filter((l) => AGENTS.every((a) => robotsAllows(robots, l.url, [a])))
-      .slice(0, MAX_LISTINGS);
+    // Each identity is checked on its own (BidScout asks, Firecrawl fetches); all must be allowed.
+    const allowed = (l: Target) => AGENTS.every((a) => robotsAllows(robots, l.url, [a]));
+    let targets: Target[];
+    if (plan.kind === "links") {
+      targets = plan.targets.filter(allowed);
+      candidates = plan.targets.length;
+      blocked = candidates - targets.length;
+      if (!targets.length) throw new Error("Trade Me's robots.txt doesn't allow reading those pages.");
+    } else {
+      const seen = new Set<string>();
+      targets = [];
+      // The exact search first; if it finds no Trade Me listings, a shorter one (make and model).
+      for (const q of [plan.query, broaderQuery(plan.query)]) {
+        if (!q || targets.length) continue;
+        queries.push(q);
+        const found = await fc.search(q, { limit: queries.length === 1 ? 10 : 20, includeDomains: ["trademe.co.nz"], country: "NZ" });
+        credits += found.credits ?? 0;
+        searched += found.results.length;
+        for (const r of found.results) {
+          const l = listingUrl(r.url);
+          if (!l || seen.has(l.listingId)) continue;
+          seen.add(l.listingId);
+          candidates++;
+          // Listings robots.txt disallows are counted (so the panel can say so) but never read.
+          if (allowed(l)) targets.push(l);
+          else blocked++;
+        }
+      }
+      targets = targets.slice(0, MAX_LISTINGS);
+    }
     let failedPages = 0;
     for (const [i, t] of targets.entries()) {
       if (i > 0) await sleep(1000);
@@ -300,7 +357,10 @@ async function run(deps: LookupDeps, id: number, query: string, sleep: (ms: numb
         [id, it.url, it.listing_id, it.title, it.status, it.price, it.price_kind, it.buy_now, it.buy_now_excerpt, it.buy_now_start,
           it.buy_now_end, it.bid_count, it.condition, it.closes, it.location, it.excerpt, it.quote_start, it.quote_end, it.verified, it.page_sha256, it.fetched_at],
       );
-    await c.query(`UPDATE price_lookups SET status=$2, error=$3, searched=$4, found=$5, credits=$6 WHERE id=$1`, [id, error ? "failed" : "ok", error, searched, items.length, credits || null]);
+    await c.query(
+      `UPDATE price_lookups SET status=$2, error=$3, searched=$4, found=$5, credits=$6, candidates=$7, queries=$8, blocked=$9 WHERE id=$1`,
+      [id, error ? "failed" : "ok", error, searched, items.length, credits || null, candidates, queries, blocked],
+    );
   });
   if (error) throw new LookupError(error, 502);
 }
