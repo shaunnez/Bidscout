@@ -21,11 +21,12 @@ const HAS = (source: string, days: string) => `EXISTS (SELECT 1 FROM price_looku
   WHERE k.lot_id = l.id AND pl.status = 'ok' AND pl.source = '${source}' AND pl.created_at > now() - make_interval(days => ${days}))`;
 
 /**
- * Two lookups start a second, up to 100 running at once (each takes 10-30 s). Parallel allows
- * 600 Extract requests a minute and a lookup reads one or two pages, so this stays well under.
+ * Gentle on Trade Me (Shaun asked, 18 Oct 2026, after some failures): one lookup starts every 3
+ * seconds, at most 5 run at once, and after a failed lookup nothing new starts for 30 seconds.
  */
-export const AUTO_CONCURRENCY = 100;
-export const AUTO_GAP_MS = 500;
+export const AUTO_CONCURRENCY = 5;
+export const AUTO_GAP_MS = 3_000;
+export const AUTO_COOL_OFF_MS = 30_000;
 const MAX_FAILURES_IN_A_ROW = 5;
 /** Enough lots for a whole day's limit in one pass. */
 const BATCH = 1000;
@@ -84,6 +85,8 @@ export interface AutoDeps {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   gapMs?: number;
+  /** After a failed lookup, how long before the next one starts. */
+  coolOffMs?: number;
   concurrency?: number;
   signal?: AbortSignal;
 }
@@ -105,6 +108,7 @@ export async function autoPriceTick(deps: AutoDeps) {
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const now = deps.now ?? Date.now;
   const gap = deps.gapMs ?? AUTO_GAP_MS;
+  const coolOff = deps.coolOffMs ?? AUTO_COOL_OFF_MS;
   const out = { looked: 0, reused: 0, failed: 0, stopped: null as string | null };
   if (!(await autoStatus(db)).available) return out;
   // Parallel only: no Chromium (too heavy to run in bulk) and no Firecrawl web-search fallback.
@@ -169,6 +173,8 @@ export async function autoPriceTick(deps: AutoDeps) {
           return;
         }
         out.failed++;
+        // Back off: nothing new starts for a while.
+        nextStart = Math.max(nextStart, now() + coolOff);
         // The rest of the group would run the same failing search: they wait a day too.
         for (const lot of group.lots) retryAfter.set(`${group.kind}:${lot.id}`, now() + 86_400_000);
         // A lookup that never started (e.g. search text too short) costs nothing and isn't a failure in a row.

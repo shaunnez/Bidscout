@@ -88,7 +88,7 @@ export function Settings({ me }: { me: Me }) {
               <p className="muted small">
                 Looks up every open lot the way the buttons would (bulk, pallet and mixed lots are skipped): Trade Me prices for
                 all of them, and the new price at New Zealand shops for products with a model number that aren't computers.
-                Through Parallel only, about 2 searches a second. Lots that need the same search share one answer; Trade Me answers
+                Through Parallel only, gently: one search every 3 seconds, at most 5 at once, pausing 30 seconds after a failure. Lots that need the same search share one answer; Trade Me answers
                 and new prices are kept 7 days, then refreshed while the lot is open. New lots are picked up after each scan. If
                 Trade Me refuses Parallel, or lookups keep failing, it turns itself off and says why here.
               </p>
