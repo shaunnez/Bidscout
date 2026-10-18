@@ -51,6 +51,15 @@ export interface Lot {
   score_incomplete: boolean;
   photo_fields: string[];
   value_index: number | null;
+  /** Trade Me (open lots): relevant listings with a buy-now price, their median and lowest, when read. */
+  tm_n: number | null;
+  tm_mid: number | null;
+  tm_low: number | null;
+  tm_at: string | null;
+  /** All-in now, the expected all-in, and the one compared (expected, else now), as % of the Trade Me median. */
+  tm_pct_now: number | null;
+  tm_pct_expected: number | null;
+  tm_pct: number | null;
   spec_n: number | null;
   spec_p50: number | null;
   watched: boolean;

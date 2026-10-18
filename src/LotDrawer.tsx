@@ -4,7 +4,7 @@ import { api, type Auction, type Citation, type LotDetail, type SpecValue, type 
 import { auctionParts, saleReason } from "./auction.ts";
 import { lookupQuery } from "./lookup.ts";
 import { closingWindow, payBy } from "./Auctions.tsx";
-import { DealBadge, MAJOR, specChips, useNow } from "./Feed.tsx";
+import { DealBadge, MAJOR, specChips, TmBadge, useNow } from "./Feed.tsx";
 import { money, nzDate, nzShort, timeLeft } from "./format.ts";
 
 const FIELD_LABEL: Record<string, string> = {
@@ -128,7 +128,7 @@ export function LotDrawer({ id, onClose, onOpenLot, onOpenAuction }: {
                   </>
                 )}
               </div>
-              <DealBadge lot={l} />
+              <div className="drawer-badges"><TmBadge lot={l} now={now} /><DealBadge lot={l} /></div>
               {l.item_url && <a className="primary" href={l.item_url} target="_blank" rel="noreferrer">{l.status === "closed" ? "View on number8.bid" : "Bid on number8.bid"} ↗</a>}
             </section>
 

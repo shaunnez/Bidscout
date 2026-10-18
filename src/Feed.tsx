@@ -3,7 +3,7 @@ import { DEVICE_LABEL, FAULT_LABEL } from "../shared/specs/computer.ts";
 import { api, type Facet, type Lot, type SearchResult, type Summary } from "./api.ts";
 import { auctionParts } from "./auction.ts";
 import { AuctionBanner } from "./Auctions.tsx";
-import { gb, money, nzDate, timeLeft } from "./format.ts";
+import { ago, gb, money, nzDate, timeLeft } from "./format.ts";
 
 export const MAJOR = new Set(["wont-boot", "no-power", "locked", "screen", "damaged", "unknown"]);
 
@@ -109,6 +109,14 @@ export function Feed({ page, params, setParams, openLot, summary, scanFinished }
             <label key={v} className="radio"><input type="radio" name="faults" checked={(params.get("faults") ?? "any") === v} onChange={() => set("faults", v === "any" ? null : v)} /> {l}</label>
           ))}
         </div>
+        {page !== "history" && (
+          <div className="fgroup">
+            <h4>Trade Me</h4>
+            {([["", "Any"], ["1", "With Trade Me prices"], ["opp", `Opportunities (≤${TM_OPPORTUNITY_PCT}% of Trade Me)`]] as const).map(([v, l]) => (
+              <label key={v} className="radio"><input type="radio" name="tm" checked={(params.get("tm") ?? "") === v} onChange={() => set("tm", v || null)} /> {l}</label>
+            ))}
+          </div>
+        )}
         <div className="fgroup">
           <h4>Price</h4>
           <MaxPrice value={params.get("maxAllIn")} onChange={(v) => set("maxAllIn", v)} />
@@ -123,13 +131,20 @@ export function Feed({ page, params, setParams, openLot, summary, scanFinished }
         {auctionId && <AuctionBanner id={auctionId} onClear={() => set("auction", null)} />}
         <div className="results-head">
           <div>
-            <h1>{page === "history" ? (auctionId ? "Results" : "Past sales") : page === "watch" ? "Your favourites" : itOnly ? "Live computer & IT lots" : auctionId ? "Lots in this auction" : "All live lots"}</h1>
+            <h1>{page === "history" ? (auctionId ? "Results" : "Past sales") : page === "watch" ? "Your favourites" : page === "deals" && params.get("tm") ? "Against Trade Me" : itOnly ? "Live computer & IT lots" : auctionId ? "Lots in this auction" : "All live lots"}</h1>
             <p className="sub">
               {data ? `${data.total.toLocaleString()} ${data.total === 1 ? "lot" : "lots"}` : "Loading…"}
               {page === "history" && summary ? ` · from ${summary.sold.toLocaleString()} recorded final bids` : ""}
               {page === "deals" && summary && !auctionId ? ` · ${summary.live_auctions} live auctions on number8.bid` : ""}
               {params.get("q") ? ` · matching “${params.get("q")}”` : ""}
             </p>
+            {page === "deals" && params.get("tm") && (
+              <p className="sub small">
+                Trade Me price: the median Buy Now or asking price of the lot's Trade Me listings. Percentages are BidScout's all-in
+                (premium and GST included) now and expected, as a share of it. Under Trade Me: {TM_OPPORTUNITY_PCT}% or less; 🔥 High
+                opportunity: that, and closing within 3 hours.
+              </p>
+            )}
           </div>
           <Select
             label="Sort"
@@ -137,7 +152,7 @@ export function Feed({ page, params, setParams, openLot, summary, scanFinished }
             onChange={(v) => set("sort", v)}
             options={page === "history"
               ? [["ended", "Most recent"], ["price", "Lowest final"], ["bids", "Most bids"]]
-              : [["closing", "Closing soonest"], ["value", "Best value"], ["expected", "Lowest expected final"], ["score", "Highest spec score"], ["price", "Lowest all-in now"], ["bids", "Most bids"], ["newest", "Newest"]]}
+              : [["closing", "Closing soonest"], ["tm", "Cheapest vs Trade Me"], ["value", "Best value"], ["expected", "Lowest expected final"], ["score", "Highest spec score"], ["price", "Lowest all-in now"], ["bids", "Most bids"], ["newest", "Newest"]]}
           />
         </div>
         {error && <p className="err">{error}</p>}
@@ -260,6 +275,41 @@ export function DealBadge({ lot }: { lot: Lot }) {
   );
 }
 
+/** Matches server/search.ts: an opportunity is at most this % of the Trade Me price. */
+export const TM_OPPORTUNITY_PCT = 70;
+const HOT_MS = 3 * 3_600_000;
+
+/** Is this lot an opportunity against Trade Me, and a high one (closing within 3 hours)? */
+export function tmOpportunity(lot: Lot, now: number): "high" | "good" | null {
+  if (lot.status !== "open" || lot.tm_pct === null || lot.tm_pct > TM_OPPORTUNITY_PCT) return null;
+  return lot.ends_at && new Date(lot.ends_at).getTime() - now < HOT_MS ? "high" : "good";
+}
+
+/** Against Trade Me: the median buy-now price of its listings, and where this lot sits now and expected. */
+export function TmBadge({ lot, now }: { lot: Lot; now: number }) {
+  if (lot.tm_pct === null || lot.tm_mid === null) return null;
+  const opp = tmOpportunity(lot, now);
+  const basis = lot.tm_pct_expected !== null ? "expected all-in" : "all-in now";
+  const why = `Median Buy Now or asking price of ${lot.tm_n} relevant Trade Me listings (lowest ${money(lot.tm_low)}), read ${ago(lot.tm_at)}. ` +
+    `All-in now ${money(lot.all_in)} is ${lot.tm_pct_now}% of it` +
+    (lot.tm_pct_expected !== null ? `; expected all-in ${money(lot.expected_mid)} is ${lot.tm_pct_expected}%` : "") +
+    `. Open the lot for each quoted Trade Me price.`;
+  return (
+    <>
+      {opp && (
+        <span className={`deal ${opp === "high" ? "hot" : "good"}`}
+          title={`The ${basis} is ${lot.tm_pct}% of the Trade Me price (${TM_OPPORTUNITY_PCT}% or less)${opp === "high" ? ", and it closes within 3 hours" : ""}.`}>
+          {opp === "high" ? <>🔥 <b>High opportunity</b></> : <b>Under Trade Me</b>}
+        </span>
+      )}
+      <span className={`deal ${lot.tm_pct <= TM_OPPORTUNITY_PCT ? "good" : lot.tm_pct >= 100 ? "high" : "neutral"}`} title={why}>
+        <span className="nowrap">Trade Me <b>~{money(lot.tm_mid)}</b></span>
+        <small className="nowrap">now {lot.tm_pct_now}%{lot.tm_pct_expected !== null ? ` · expect ${lot.tm_pct_expected}%` : ""} · {lot.tm_n} listings</small>
+      </span>
+    </>
+  );
+}
+
 /** "4d 1h", amber inside a day, red inside 3 hours. */
 export function Countdown({ ends, now }: { ends: string | null; now: number }) {
   const tl = timeLeft(ends, now);
@@ -288,7 +338,7 @@ function LotRow({ lot, now, onOpen, showAuction }: { lot: Lot; now: number; onOp
       setFav(fav);
     }
   };
-  const insight = (lot.status === "open" && lot.expected_mid !== null) || (lot.comp_n && lot.comp_p50 !== null) || lot.spec_score !== null;
+  const insight = (lot.status === "open" && lot.expected_mid !== null) || (lot.comp_n && lot.comp_p50 !== null) || lot.spec_score !== null || lot.tm_pct !== null;
   return (
     <li className={`lot ${fav ? "watched" : ""} ${closed ? "closed" : ""}`}>
       <button className="lot-hit" onClick={onOpen} aria-label={`Open ${lot.title}`} />
@@ -332,6 +382,7 @@ function LotRow({ lot, now, onOpen, showAuction }: { lot: Lot; now: number; onOp
       </div>
       {insight && (
         <div className="lot-insight">
+          <TmBadge lot={lot} now={now} />
           <DealBadge lot={lot} />
           {lot.spec_score !== null && <span className="deal quiet" title="BidScout's spec score: CPU tier and age, RAM, storage and faults">Spec score <b>{lot.spec_score}</b>{lot.score_incomplete ? <small>partial</small> : null}</span>}
         </div>

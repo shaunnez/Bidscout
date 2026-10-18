@@ -116,9 +116,13 @@ function SignedIn({ me, setMe }: { me: Me; setMe: (m: Me | null) => void }) {
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search lots: thinkpad t14, rtx 3060, 27 inch, forklift…" aria-label="Search lots" />
         </form>
         <nav className="tabs">
-          {([["deals", "Live deals"], ["auctions", "Auctions"], ["history", "Past sales"], ["watch", `Favourites${summary?.watching ? ` (${summary.watching})` : ""}`], ["scans", "Scans"]] as const).map(([p, label]) => (
-            <a key={p} href={`#/${p === "deals" ? "" : p}`} className={route.page === p ? "on" : ""} onClick={(e) => { e.preventDefault(); go(p); }}>{label}</a>
-          ))}
+          {([["deals", "Live deals"], ["tm", "Trade Me deals"], ["auctions", "Auctions"], ["history", "Past sales"], ["watch", `Favourites${summary?.watching ? ` (${summary.watching})` : ""}`], ["scans", "Scans"]] as const).map(([p, label]) => {
+            // "Trade Me deals" is Live deals for IT lots with Trade Me prices, cheapest against Trade Me first.
+            const tmView = route.page === "deals" && route.params.has("tm");
+            const on = p === "tm" ? tmView : p === "deals" ? route.page === "deals" && !tmView : route.page === p;
+            const open = () => (p === "tm" ? go("deals", new URLSearchParams({ it: "1", tm: "1", sort: "tm" })) : go(p));
+            return <a key={p} href={p === "tm" ? "#/?it=1&tm=1&sort=tm" : `#/${p === "deals" ? "" : p}`} className={on ? "on" : ""} onClick={(e) => { e.preventDefault(); open(); }}>{label}</a>;
+          })}
         </nav>
         <button
           className={`scan-btn ${scan.active ? "busy" : ""}`}
