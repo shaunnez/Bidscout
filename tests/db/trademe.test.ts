@@ -277,7 +277,8 @@ test("Trade Me prices: Trade Me's own search, the next searcher when one fails, 
   const slow: TradeMeSearcher = { name: "chromium", async search(u) { await gate; return chromium.search(u); } };
   const bg = await tradeMeLookup({ ...deps, searchers: [slow] }, { lotId: 9001, userId: user, query: "HP ProBook 450 G8 i5-10210U", background: true });
   assert.equal(bg.status, "running");
-  assert.equal((await tradeMeLookup({ ...deps, searchers: [slow] }, { lotId: 9001, userId: user, query: "HP ProBook 450 G8 i5-10210U", background: true })).id, bg.id);
+  await db.query(`INSERT INTO lots (id, auction_id, title, device_type, status) VALUES (9003, 77, 'HP ProBook 450 G8 - Laptop (2)', 'laptop', 'open') ON CONFLICT DO NOTHING`);
+  assert.equal((await tradeMeLookup({ ...deps, searchers: [slow] }, { lotId: 9003, userId: user, query: "HP ProBook 450 G8 i5-10210U", background: true })).id, bg.id);
   release();
   let done = bg;
   for (let i = 0; i < 50 && done.status === "running"; i++) {
@@ -286,6 +287,8 @@ test("Trade Me prices: Trade Me's own search, the next searcher when one fails, 
   }
   assert.equal(done.status, "ok");
   assert.equal((await latestForLot(db, 9001))?.id, bg.id, "linked to the lot once finished");
+  for (let i = 0; i < 50 && !(await latestForLot(db, 9003)); i++) await new Promise((ok) => setTimeout(ok, 20));
+  assert.equal((await latestForLot(db, 9003))?.id, bg.id, "and to the lot whose press joined it");
   await db.query(`INSERT INTO price_lookups (source, query, query_key, status) VALUES ('trademe', 'stuck', 'stuck', 'running')`);
   await failInterruptedLookups(db);
   assert.equal((await db.query(`SELECT status FROM price_lookups WHERE query='stuck'`)).rows[0].status, "failed", "a restart doesn't leave lookups running forever");

@@ -276,7 +276,11 @@ export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | n
   const inFlight = running.get(key);
   if (inFlight) {
     // In the background: the same lookup, still running. Otherwise wait for it and take its answer.
-    if (input.background) return { ...(await loadLookup(db, inFlight.id))!, cached: false };
+    if (input.background) {
+      // This lot gets the shared answer too, once it's in.
+      inFlight.done.then(async () => { await linkLot(db, inFlight.id, input.lotId); }).catch(() => {});
+      return { ...(await loadLookup(db, inFlight.id))!, cached: false };
+    }
     await inFlight.done.catch(() => {});
     return tradeMeLookup(deps, input);
   }

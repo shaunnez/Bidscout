@@ -493,6 +493,10 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
     setErr(null);
     setBusy(false);
     setRanHere(0);
+    // Closing the drawer or changing lots stops any polling.
+    return () => {
+      shown.current = -1;
+    };
   }, [lot.id, state.latest]);
   const run = async (fromLinks = false) => {
     const forLot = lot.id;
