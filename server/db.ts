@@ -11,7 +11,7 @@ export type Db = pg.Pool;
 export type Tx = pg.PoolClient;
 
 export function connect(url: string): Db {
-  return new pg.Pool({ connectionString: url, max: 8 });
+  return new pg.Pool({ connectionString: url, max: 16 });
 }
 
 export async function tx<T>(db: Db, fn: (c: Tx) => Promise<T>): Promise<T> {

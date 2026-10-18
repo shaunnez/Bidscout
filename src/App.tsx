@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type ScanRun, type Summary } from "./api.ts";
+import { account, api, setOnSignedOut, type Me, type ScanRun, type Summary } from "./api.ts";
 import { Feed } from "./Feed.tsx";
 import { ago } from "./format.ts";
+import { Login } from "./Login.tsx";
 import { LotDrawer } from "./LotDrawer.tsx";
+import { Profile } from "./Profile.tsx";
 import { Scans } from "./Scans.tsx";
+import { Settings } from "./Settings.tsx";
 
-export type Route = { page: "deals" | "history" | "watch" | "scans"; params: URLSearchParams };
+export type Route = { page: "deals" | "history" | "watch" | "scans" | "settings" | "profile"; params: URLSearchParams };
 
 function readHash(): Route {
   const raw = window.location.hash.replace(/^#\/?/, "");
   const [path, qs] = raw.split("?");
-  const page = (["history", "watch", "scans"] as const).find((p) => p === path) ?? "deals";
+  const page = (["history", "watch", "scans", "settings", "profile"] as const).find((p) => p === path) ?? "deals";
   return { page, params: new URLSearchParams(qs ?? "") };
 }
 
@@ -45,7 +48,20 @@ export function useScan() {
 }
 
 export function App() {
+  const [me, setMe] = useState<Me | null | undefined>(undefined);
+  const loadMe = useCallback(() => account.me().then(setMe).catch(() => setMe(null)), []);
+  useEffect(() => {
+    setOnSignedOut(() => setMe(null));
+    loadMe();
+  }, [loadMe]);
+  if (me === undefined) return <div className="login-wrap"><p className="muted">Loading…</p></div>;
+  if (me === null) return <Login onSignedIn={loadMe} />;
+  return <SignedIn me={me} setMe={setMe} />;
+}
+
+function SignedIn({ me, setMe }: { me: Me; setMe: (m: Me | null) => void }) {
   const { route, go } = useRoute();
+  const [menu, setMenu] = useState(false);
   const scan = useScan();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [q, setQ] = useState(route.params.get("q") ?? "");
@@ -67,7 +83,7 @@ export function App() {
 
   const submitSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    const page = route.page === "scans" ? "deals" : route.page;
+    const page = route.page === "scans" || route.page === "settings" || route.page === "profile" ? "deals" : route.page;
     const p = new URLSearchParams(page === route.page ? route.params : undefined);
     if (q.trim()) p.set("q", q.trim());
     else p.delete("q");
@@ -97,7 +113,7 @@ export function App() {
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search lots: thinkpad t14, rtx 3060, 27 inch, forklift…" aria-label="Search lots" />
         </form>
         <nav className="tabs">
-          {([["deals", "Live deals"], ["history", "Past sales"], ["watch", `Watchlist${summary?.watching ? ` (${summary.watching})` : ""}`], ["scans", "Scans"]] as const).map(([p, label]) => (
+          {([["deals", "Live deals"], ["history", "Past sales"], ["watch", `Favourites${summary?.watching ? ` (${summary.watching})` : ""}`], ["scans", "Scans"]] as const).map(([p, label]) => (
             <a key={p} href={`#/${p === "deals" ? "" : p}`} className={route.page === p ? "on" : ""} onClick={(e) => { e.preventDefault(); go(p); }}>{label}</a>
           ))}
         </nav>
@@ -109,11 +125,26 @@ export function App() {
           <span className="dot" aria-hidden />
           {scan.active ? <>Scanning <small>{progress}</small></> : <>Scan now <small>{summary?.last_live_scan ? ago(summary.last_live_scan) : "never"}</small></>}
         </button>
+        <div className="user-menu">
+          <button className="avatar" onClick={() => setMenu(!menu)} aria-expanded={menu} aria-label="Account menu">{me.display_name.slice(0, 1).toUpperCase()}</button>
+          {menu && (
+            <div className="menu" onMouseLeave={() => setMenu(false)}>
+              <div className="menu-who"><b>{me.display_name}</b><span className="muted small">{me.username}{me.is_admin ? " · admin" : ""}</span></div>
+              <button onClick={() => { setMenu(false); go("profile"); }}>Profile</button>
+              <button onClick={() => { setMenu(false); go("settings"); }}>Settings{me.is_admin ? " & people" : ""}</button>
+              <button onClick={() => account.logout().finally(() => setMe(null))}>Sign out</button>
+            </div>
+          )}
+        </div>
       </header>
 
       <main className="body">
         {route.page === "scans" ? (
           <Scans scan={scan} />
+        ) : route.page === "settings" ? (
+          <Settings me={me} />
+        ) : route.page === "profile" ? (
+          <Profile me={me} onSaved={setMe} />
         ) : (
           <Feed key={route.page} page={route.page} params={route.params} setParams={setParams} openLot={openLot} summary={summary} scanFinished={scan.run?.finished_at ?? null} />
         )}

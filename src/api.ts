@@ -45,6 +45,9 @@ export interface Lot {
   comp_kind: "machine" | "similar" | null;
   watched: boolean;
   max_all_in: number | null;
+  watcher_count: number;
+  friend_high_bidder: string | null;
+  friend_bidders: number;
   first_seen: string;
 }
 
@@ -85,6 +88,8 @@ export interface LotDetail {
   observations: Array<{ id: number; observed_at: string; current_bid: number | null; bid_count: number | null; ends_at: string | null; status: string; snapshot_id: number; snapshot_path: string }>;
   terms: { premium_rate: number | null; gst_rate: number | null; payment_due: string | null } | null;
   revisions: Array<{ id: number; created_at: string }>;
+  watchers: Array<{ id: number; display_name: string; added_at: string }>;
+  friendBids: Array<{ user_id: number; display_name: string; kind: "high_bidder" | "bid"; amount: number | null; bid_at: string | null; seen_at: string }>;
   comps: Array<{ id: number; title: string; final_bid: number; all_in: number; closed_at: string; faults: string[]; auction_title: string; item_url: string | null; outcome_snapshot_id: number; outcome_path: string }>;
 }
 
@@ -146,8 +151,13 @@ export interface Summary {
   last_history_scan: string | null;
 }
 
+/** Called when the session has ended, so the app can show the sign-in screen. */
+export let onSignedOut: () => void = () => {};
+export const setOnSignedOut = (fn: () => void) => (onSignedOut = fn);
+
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { ...init, headers: { "content-type": "application/json", ...(init?.headers ?? {}) } });
+  if (r.status === 401 && !url.startsWith("/api/auth/")) onSignedOut();
   if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `Request failed (${r.status})`);
   return r.json() as Promise<T>;
 }
@@ -164,6 +174,45 @@ export const api = {
   startScan: (body: { kind: "live" | "history"; resume?: boolean; options?: Record<string, unknown> }) =>
     call<{ run: ScanRun; reused: boolean }>(`/api/scans`, { method: "POST", body: JSON.stringify(body) }),
   cancelScan: (id: number) => call(`/api/scans/${id}/cancel`, { method: "POST", body: "{}" }),
-  watch: (id: number, maxAllIn: number | null = null) => call(`/api/watch/${id}`, { method: "PUT", body: JSON.stringify({ maxAllIn }) }),
-  unwatch: (id: number) => call(`/api/watch/${id}`, { method: "DELETE" }),
+  watch: (id: number, maxAllIn: number | null = null) => call(`/api/favourites/${id}`, { method: "PUT", body: JSON.stringify({ maxAllIn }) }),
+  unwatch: (id: number) => call(`/api/favourites/${id}`, { method: "DELETE" }),
+  refreshLot: (id: number) => call<{ ok: true }>(`/api/lots/${id}/refresh`, { method: "POST", body: "{}" }),
+};
+
+export interface Me {
+  id: number;
+  username: string;
+  display_name: string;
+  is_admin: boolean;
+  email: string | null;
+  n8_username: string | null;
+  n8_bidder_number: string | null;
+}
+
+export interface AdminUser extends Me {
+  disabled: boolean;
+  created_at: string;
+  last_sign_in: string | null;
+}
+
+export interface ScanSettings {
+  scheduleEnabled: boolean;
+  liveEveryHours: number;
+  historyWeekly: boolean;
+  concurrency: number;
+}
+
+export const account = {
+  me: () => call<Me>(`/api/me`),
+  login: (username: string, password: string) => call<{ ok: true }>(`/api/auth/login`, { method: "POST", body: JSON.stringify({ username, password }) }),
+  logout: () => call(`/api/auth/logout`, { method: "POST", body: "{}" }),
+  saveMe: (body: Partial<Me> & { current_password?: string; new_password?: string }) => call<Me>(`/api/me`, { method: "PUT", body: JSON.stringify(body) }),
+  users: () => call<{ users: AdminUser[] }>(`/api/admin/users`),
+  createUser: (body: { username: string; display_name: string; password: string; is_admin: boolean }) =>
+    call<{ id: number }>(`/api/admin/users`, { method: "POST", body: JSON.stringify(body) }),
+  updateUser: (id: number, body: { display_name?: string; is_admin?: boolean; disabled?: boolean; password?: string }) =>
+    call(`/api/admin/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteUser: (id: number) => call(`/api/admin/users/${id}`, { method: "DELETE" }),
+  settings: () => call<{ scan: ScanSettings; liveHourOptions: number[] }>(`/api/settings`),
+  saveSettings: (scan: Partial<ScanSettings>) => call<{ scan: ScanSettings }>(`/api/settings`, { method: "PUT", body: JSON.stringify({ scan }) }),
 };

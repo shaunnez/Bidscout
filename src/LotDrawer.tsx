@@ -19,6 +19,9 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
   const [cite, setCite] = useState<CiteRequest | null>(null);
   const [img, setImg] = useState(0);
   const [watched, setWatched] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
   const now = useNow(true);
 
   useEffect(() => {
@@ -26,7 +29,20 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
     setCite(null);
     setImg(0);
     api.lot(id).then((x) => { setD(x); setWatched(x.lot.watched); }).catch((e) => setErr(e.message));
-  }, [id]);
+  }, [id, reload]);
+  const refresh = async () => {
+    setRefreshing(true);
+    setRefreshMsg(null);
+    try {
+      await api.refreshLot(id);
+      setRefreshMsg(`Checked number8.bid at ${new Date().toLocaleTimeString("en-NZ", { timeZone: "Pacific/Auckland", hour: "numeric", minute: "2-digit" })}`);
+      setReload((n) => n + 1);
+    } catch (e) {
+      setRefreshMsg((e as Error).message);
+    } finally {
+      setRefreshing(false);
+    }
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && (cite ? setCite(null) : onClose());
     window.addEventListener("keydown", onKey);
@@ -51,7 +67,7 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
         <div className="drawer-bar">
           <button className="icon" onClick={onClose} aria-label="Close">✕</button>
           {l && <span className="bar-title">Lot {l.lot_number} · {l.auction_title}</span>}
-          {l && <button className={`watch ${watched ? "on" : ""}`} onClick={toggleWatch}>{watched ? "★ Watching" : "☆ Watch"}</button>}
+          {l && <button className={`watch ${watched ? "on" : ""}`} onClick={toggleWatch}>{watched ? "★ Favourite" : "☆ Favourite"}</button>}
         </div>
         {err && <p className="err">{err}</p>}
         {!d && !err && <p className="pad muted">Loading…</p>}
@@ -103,6 +119,26 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
               </div>
               <DealBadge lot={l} />
               {l.item_url && <a className="primary" href={l.item_url} target="_blank" rel="noreferrer">{l.status === "closed" ? "View on number8.bid" : "Bid on number8.bid"} ↗</a>}
+            </section>
+
+            <section className="social-box">
+              <div className="social-head">
+                <h3>Friends</h3>
+                {l.status === "open" && <button className="ghost small-btn" onClick={refresh} disabled={refreshing}>{refreshing ? "Checking…" : "Refresh now"}</button>}
+              </div>
+              {refreshMsg && <p className="small muted">{refreshMsg}</p>}
+              {l.friend_high_bidder && <p className="friend-line"><b>{l.friend_high_bidder}</b> is the high bidder. Check with them before bidding.</p>}
+              {d.friendBids.filter((b) => b.kind === "bid").length > 0 && (
+                <ul className="friend-bids">
+                  {d.friendBids.filter((b) => b.kind === "bid").slice(0, 8).map((b, i) => (
+                    <li key={i}><b>{b.display_name}</b> bid {money(b.amount)}{b.bid_at ? ` · ${nzDate(b.bid_at)}` : ""}</li>
+                  ))}
+                </ul>
+              )}
+              {!l.friend_high_bidder && !d.friendBids.length && <p className="small muted">No friends have bid on this lot{l.status === "open" ? " as of the last check" : ""}.</p>}
+              <p className="small muted">
+                {d.watchers.length ? <>Favourited by {d.watchers.map((w) => w.display_name).join(", ")}.</> : "Nobody has favourited this lot."}
+              </p>
             </section>
 
             {specs.length > 0 && (

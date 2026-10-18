@@ -66,7 +66,8 @@ export const LOT_JOINS = `
   LEFT JOIN LATERAL (SELECT premium_rate, gst_rate FROM auction_terms WHERE auction_id = l.auction_id ORDER BY id DESC LIMIT 1) t ON true
   LEFT JOIN comp_stats cm ON cm.key = l.machine_key || ${FAULT_SUFFIX}
   LEFT JOIN comp_stats cl ON cl.key = l.loose_key || ${FAULT_SUFFIX}
-  LEFT JOIN watchlist w ON w.lot_id = l.id`;
+  LEFT JOIN favourites w ON w.lot_id = l.id AND w.user_id = $1
+  LEFT JOIN users fh ON fh.id = l.friend_high_user_id`;
 
 /** The comparable set used: exact machine when it has 3+ sales, else similar machines, else whatever exists. */
 const COMP = (f: string) =>
@@ -82,7 +83,10 @@ export const LOT_COLUMNS = `
   (t.gst_rate IS NULL) AS gst_assumed,
   ${COMP("n")} AS comp_n, ${COMP("p25")} AS comp_p25, ${COMP("p50")} AS comp_p50, ${COMP("p75")} AS comp_p75,
   CASE WHEN cm.n >= 3 THEN 'machine' WHEN cl.n >= 3 THEN 'similar' WHEN cm.n IS NOT NULL THEN 'machine' WHEN cl.n IS NOT NULL THEN 'similar' END AS comp_kind,
-  (w.lot_id IS NOT NULL) AS watched, w.max_all_in`;
+  (w.lot_id IS NOT NULL) AS watched, w.max_all_in,
+  (SELECT count(*)::int FROM favourites f WHERE f.lot_id = l.id) AS watcher_count,
+  fh.display_name AS friend_high_bidder,
+  (SELECT count(DISTINCT fb.user_id)::int FROM friend_bids fb WHERE fb.lot_id = l.id) AS friend_bidders`;
 
 function where(q: SearchQuery, params: unknown[], skip?: string) {
   const w: string[] = [];
@@ -123,22 +127,23 @@ const ORDER: Record<string, string> = {
   deal: `CASE WHEN comp_n >= 3 AND comp_p50 > 0 THEN (comp_p50 - all_in) / comp_p50 END DESC NULLS LAST, l.ends_at ASC`,
 };
 
-export async function searchLots(db: Db, q: SearchQuery) {
-  const params: unknown[] = [];
+/** All search queries run in parallel; $1 is always the signed-in user (for favourites). */
+export async function searchLots(db: Db, q: SearchQuery, userId: number) {
+  const params: unknown[] = [userId];
   const w = where(q, params);
   const sort = q.sort ?? (q.status === "closed" ? "ended" : "closing");
   const offset = ((q.page ?? 1) - 1) * (q.perPage ?? 40);
-  const items = await db.query(
+  const itemsQ = db.query(
     `SELECT * FROM (SELECT ${LOT_COLUMNS} FROM lots l ${LOT_JOINS} ${w}) x
      ORDER BY ${ORDER[sort]!.replace(/\bl\./g, "x.")} LIMIT ${q.perPage} OFFSET ${offset}`,
     params,
   );
-  const totalP: unknown[] = [];
-  const total = await db.query(`SELECT count(*)::int AS n FROM lots l ${LOT_JOINS} ${where(q, totalP)}`, totalP);
+  const totalP: unknown[] = [userId];
+  const totalQ = db.query(`SELECT count(*)::int AS n FROM lots l ${LOT_JOINS} ${where(q, totalP)}`, totalP);
 
   // Each facet counts with every other filter applied, but not its own, so choices stay visible.
   const facet = async (name: string, expr: string, limit = 40) => {
-    const fp: unknown[] = [];
+    const fp: unknown[] = [userId];
     const r = await db.query(
       `SELECT ${expr} AS value, count(*)::int AS n FROM lots l ${LOT_JOINS} ${where(q, fp, name)}
        GROUP BY 1 HAVING ${expr} IS NOT NULL ORDER BY n DESC, 1 LIMIT ${limit}`,
@@ -146,7 +151,9 @@ export async function searchLots(db: Db, q: SearchQuery) {
     );
     return r.rows as Array<{ value: string; n: number }>;
   };
-  const [category, type, make, cpu] = await Promise.all([
+  const [items, total, category, type, make, cpu] = await Promise.all([
+    itemsQ,
+    totalQ,
     facet("category", `COALESCE(l.category, 'Uncategorised')`),
     facet("type", `l.device_type`),
     facet("make", `l.make`, 30),

@@ -5,31 +5,172 @@ import Fastify from "fastify";
 import { cleanText, CLEAN_VERSION } from "../shared/clean.ts";
 import { resolvePath } from "../shared/cite.ts";
 import { PARSER_VERSION } from "../shared/specs/computer.ts";
-import { passwordAccepted } from "./auth.ts";
+import {
+  bootstrapAdmin, createSession, endSession, hashPassword, LoginLimiter, passwordProblem, readCookie,
+  SESSION_COOKIE, sessionCookie, userFromToken, usernameProblem, verifyPassword, type SessionUser,
+} from "./auth.ts";
 import { isLoopback } from "./config.ts";
 import { appContext } from "./context.ts";
+import { refreshLot } from "./scan/refresh.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
+import { getScanSettings, LIVE_HOURS, saveScanSettings } from "./settings.ts";
 import { LOT_COLUMNS, LOT_JOINS, parseQuery, searchLots } from "./search.ts";
 import { loadSnapshotDoc } from "./snapshots.ts";
 import { runWorkerLoop } from "./worker.ts";
 
 const ctx = await appContext();
 const { db, store, config } = ctx;
-if (!isLoopback(config.host) && !config.password) {
-  console.error(`Refusing to listen on ${config.host} without BIDSCOUT_PASSWORD: anyone could start scans.`);
+const hasUsers = (await db.query(`SELECT 1 FROM users LIMIT 1`)).rowCount;
+if (!isLoopback(config.host) && !hasUsers && !config.password) {
+  console.error(`Refusing to listen on ${config.host}: there are no users yet and BIDSCOUT_PASSWORD is not set for the first admin.`);
   process.exit(1);
 }
+const bootNote = await bootstrapAdmin(db, {
+  username: process.env.BIDSCOUT_ADMIN_USERNAME?.trim() || "admin",
+  password: config.password,
+  local: isLoopback(config.host),
+});
+if (bootNote) console.log(bootNote);
+
+declare module "fastify" {
+  interface FastifyRequest {
+    user: SessionUser | null;
+  }
+}
+
 const app = Fastify({ logger: { level: "warn" }, trustProxy: true });
+const limiter = new LoginLimiter();
+app.decorateRequest("user", null);
 
 app.get("/api/health", async () => {
   await db.query("SELECT 1");
   return { ok: true };
 });
 
+// Everything under /api needs a signed-in user, except health and sign-in. The UI bundle is public.
+const PUBLIC_API = new Set(["/api/health", "/api/auth/login"]);
 app.addHook("onRequest", async (req, reply) => {
-  if (req.url === "/api/health" || passwordAccepted(req.headers.authorization, config.password)) return;
-  reply.header("WWW-Authenticate", 'Basic realm="BidScout", charset="UTF-8"').code(401).send({ error: "Password required" });
+  if (!req.url.startsWith("/api/") || PUBLIC_API.has(req.url.split("?")[0]!)) return;
+  req.user = await userFromToken(db, readCookie(req.headers.cookie, SESSION_COOKIE));
+  if (!req.user) return reply.code(401).send({ error: "Sign in required" });
 });
+
+const requireAdmin = async (req: { user: SessionUser | null }, reply: { code: (n: number) => { send: (b: unknown) => unknown } }) => {
+  if (!req.user?.is_admin) return reply.code(403).send({ error: "Admins only" });
+};
+const uid = (req: { user: SessionUser | null }) => req.user!.id;
+
+app.post<{ Body: { username?: string; password?: string } }>("/api/auth/login", async (req, reply) => {
+  const username = String(req.body?.username ?? "").trim();
+  const password = String(req.body?.password ?? "");
+  const keys = [`u:${username.toLowerCase()}`, `ip:${req.ip}`];
+  if (limiter.blocked(...keys)) return reply.code(429).send({ error: "Too many attempts. Try again in 15 minutes." });
+  const u = (await db.query(`SELECT id, password_hash, disabled FROM users WHERE lower(username)=lower($1)`, [username])).rows[0];
+  const ok = !!u && !u.disabled && (await verifyPassword(password, u.password_hash));
+  if (!ok) {
+    limiter.fail(...keys);
+    return reply.code(401).send({ error: "Wrong username or password" });
+  }
+  limiter.clear(...keys);
+  const token = await createSession(db, Number(u.id));
+  reply.header("Set-Cookie", sessionCookie(token, req.protocol === "https"));
+  return { ok: true };
+});
+
+app.post("/api/auth/logout", async (req, reply) => {
+  const token = readCookie(req.headers.cookie, SESSION_COOKIE);
+  if (token) await endSession(db, token);
+  reply.header("Set-Cookie", sessionCookie("", req.protocol === "https", 0));
+  return { ok: true };
+});
+
+const ME_COLUMNS = `id, username, display_name, is_admin, email, n8_username, n8_bidder_number, created_at`;
+
+app.get("/api/me", async (req) => (await db.query(`SELECT ${ME_COLUMNS} FROM users WHERE id=$1`, [uid(req)])).rows[0]);
+
+app.put<{ Body: { display_name?: string; email?: string | null; n8_username?: string | null; n8_bidder_number?: string | null; current_password?: string; new_password?: string } }>(
+  "/api/me",
+  async (req, reply) => {
+    const b = req.body ?? {};
+    const cur = (await db.query(`SELECT password_hash FROM users WHERE id=$1`, [uid(req)])).rows[0];
+    if (b.new_password !== undefined) {
+      const problem = passwordProblem(b.new_password);
+      if (problem) return reply.code(400).send({ error: problem });
+      if (!(await verifyPassword(String(b.current_password ?? ""), cur.password_hash)))
+        return reply.code(400).send({ error: "Your current password is wrong" });
+      await db.query(`UPDATE users SET password_hash=$2, updated_at=now() WHERE id=$1`, [uid(req), await hashPassword(b.new_password)]);
+    }
+    const clean = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) || null : null);
+    await db.query(
+      `UPDATE users SET display_name=COALESCE($2, display_name), email=$3, n8_username=$4, n8_bidder_number=$5, updated_at=now() WHERE id=$1`,
+      [uid(req), clean(b.display_name, 60), clean(b.email, 200), clean(b.n8_username, 80), clean(b.n8_bidder_number, 40)],
+    );
+    return (await db.query(`SELECT ${ME_COLUMNS} FROM users WHERE id=$1`, [uid(req)])).rows[0];
+  },
+);
+
+// ---------------------------------------------------------------- admin: users and settings
+
+app.get("/api/admin/users", { preHandler: requireAdmin }, async () => ({
+  users: (await db.query(
+    `SELECT id, username, display_name, is_admin, disabled, email, n8_username, n8_bidder_number, created_at,
+            (SELECT max(created_at) FROM sessions s WHERE s.user_id=u.id) AS last_sign_in
+     FROM users u ORDER BY lower(username)`,
+  )).rows,
+}));
+
+app.post<{ Body: { username?: string; display_name?: string; password?: string; is_admin?: boolean } }>(
+  "/api/admin/users",
+  { preHandler: requireAdmin },
+  async (req, reply) => {
+    const b = req.body ?? {};
+    const problem = usernameProblem(b.username) ?? passwordProblem(b.password);
+    if (problem) return reply.code(400).send({ error: problem });
+    const taken = await db.query(`SELECT 1 FROM users WHERE lower(username)=lower($1)`, [b.username]);
+    if (taken.rowCount) return reply.code(400).send({ error: "That username is taken" });
+    const r = await db.query(
+      `INSERT INTO users (username, display_name, password_hash, is_admin) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [b.username, String(b.display_name ?? "").trim().slice(0, 60) || b.username, await hashPassword(b.password!), !!b.is_admin],
+    );
+    return { id: r.rows[0].id };
+  },
+);
+
+app.put<{ Params: { id: string }; Body: { display_name?: string; is_admin?: boolean; disabled?: boolean; password?: string } }>(
+  "/api/admin/users/:id",
+  { preHandler: requireAdmin },
+  async (req, reply) => {
+    const id = Number(req.params.id);
+    const b = req.body ?? {};
+    if (id === uid(req) && (b.is_admin === false || b.disabled === true))
+      return reply.code(400).send({ error: "You can't remove your own admin rights or disable yourself" });
+    if (b.password !== undefined) {
+      const problem = passwordProblem(b.password);
+      if (problem) return reply.code(400).send({ error: problem });
+      await db.query(`UPDATE users SET password_hash=$2, updated_at=now() WHERE id=$1`, [id, await hashPassword(b.password)]);
+      await db.query(`DELETE FROM sessions WHERE user_id=$1`, [id]);
+    }
+    await db.query(
+      `UPDATE users SET display_name=COALESCE($2, display_name), is_admin=COALESCE($3, is_admin), disabled=COALESCE($4, disabled), updated_at=now() WHERE id=$1`,
+      [id, typeof b.display_name === "string" ? b.display_name.trim().slice(0, 60) || null : null, typeof b.is_admin === "boolean" ? b.is_admin : null, typeof b.disabled === "boolean" ? b.disabled : null],
+    );
+    if (b.disabled) await db.query(`DELETE FROM sessions WHERE user_id=$1`, [id]);
+    return { ok: true };
+  },
+);
+
+app.delete<{ Params: { id: string } }>("/api/admin/users/:id", { preHandler: requireAdmin }, async (req, reply) => {
+  const id = Number(req.params.id);
+  if (id === uid(req)) return reply.code(400).send({ error: "You can't delete yourself" });
+  await db.query(`DELETE FROM users WHERE id=$1`, [id]);
+  return { ok: true };
+});
+
+app.get("/api/settings", async () => ({ scan: await getScanSettings(db), liveHourOptions: LIVE_HOURS }));
+
+app.put<{ Body: { scan?: Record<string, unknown> } }>("/api/settings", { preHandler: requireAdmin }, async (req) => ({
+  scan: await saveScanSettings(db, (req.body?.scan ?? {}) as never, uid(req)),
+}));
 
 const snapshotMeta = (m: Record<string, unknown>) => ({
   id: m.id,
@@ -42,19 +183,19 @@ const snapshotMeta = (m: Record<string, unknown>) => ({
   redactions: m.redactions,
 });
 
-app.get("/api/lots", async (req) => searchLots(db, parseQuery(req.query as Record<string, unknown>)));
+app.get("/api/lots", async (req) => searchLots(db, parseQuery(req.query as Record<string, unknown>), uid(req)));
 
 app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
   const id = Number(req.params.id);
   const r = await db.query(
     `SELECT ${LOT_COLUMNS}, l.description, l.images, l.bid_history, l.current_revision_id, l.machine_key, l.loose_key,
             l.detail_read_at, l.outcome_snapshot_id, l.outcome_path, a.url AS auction_url, a.city AS auction_city
-     FROM lots l ${LOT_JOINS} WHERE l.id=$1`,
-    [id],
+     FROM lots l ${LOT_JOINS} WHERE l.id=$2`,
+    [uid(req), id],
   );
   const lot = r.rows[0];
   if (!lot) return reply.code(404).send({ error: "No such lot" });
-  const [specs, obs, terms, revs] = await Promise.all([
+  const [specs, obs, terms, revs, watchers, friendBids] = await Promise.all([
     db.query(
       `SELECT id, field, value, num, source, start_offset, end_offset, quote, method FROM spec_values
        WHERE lot_revision_id=$1 AND parser_version=$2 ORDER BY id`,
@@ -66,6 +207,16 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
     ),
     db.query(`SELECT * FROM auction_terms WHERE auction_id=$1 ORDER BY id DESC LIMIT 1`, [lot.auction_id]),
     db.query(`SELECT id, created_at, snapshot_id FROM lot_revisions WHERE lot_id=$1 ORDER BY id`, [id]),
+    db.query(
+      `SELECT u.id, u.display_name, f.added_at FROM favourites f JOIN users u ON u.id=f.user_id
+       WHERE f.lot_id=$1 AND NOT u.disabled ORDER BY f.added_at`,
+      [id],
+    ),
+    db.query(
+      `SELECT fb.user_id, u.display_name, fb.kind, fb.amount, fb.bid_at, fb.seen_at, fb.snapshot_id FROM friend_bids fb
+       JOIN users u ON u.id=fb.user_id WHERE fb.lot_id=$1 ORDER BY COALESCE(fb.bid_at, fb.seen_at) DESC LIMIT 30`,
+      [id],
+    ),
   ]);
   const suffix = lot.major_fault ? "|fault" : "";
   const compKey = lot.comp_kind === "similar" ? lot.loose_key : lot.machine_key;
@@ -81,7 +232,10 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
         [id, compKey, !!suffix],
       )
     : { rows: [] };
-  return { lot, specs: specs.rows, observations: obs.rows, terms: terms.rows[0] ?? null, revisions: revs.rows, comps: comps.rows };
+  return {
+    lot, specs: specs.rows, observations: obs.rows, terms: terms.rows[0] ?? null, revisions: revs.rows, comps: comps.rows,
+    watchers: watchers.rows, friendBids: friendBids.rows,
+  };
 });
 
 /** The exact words behind a spec value, re-read from the stored snapshot and checked. */
@@ -164,7 +318,7 @@ app.post<{ Body: { kind?: RunKind; resume?: boolean; options?: RunOptions } }>("
   if (Number(opts.maxPages) > 0) options.maxPages = Number(opts.maxPages);
   if (Number(opts.maxDetails) > 0) options.maxDetails = Number(opts.maxDetails);
   if (typeof opts.category === "string" && opts.category) options.category = opts.category;
-  return startRun(db, kind, options, !!req.body?.resume);
+  return startRun(db, kind, options, !!req.body?.resume, { trigger: "manual", startedBy: uid(req) });
 });
 
 app.post<{ Params: { id: string } }>("/api/scans/:id/cancel", async (req) => {
@@ -172,31 +326,42 @@ app.post<{ Params: { id: string } }>("/api/scans/:id/cancel", async (req) => {
   return { ok: true };
 });
 
-app.put<{ Params: { id: string }; Body: { maxAllIn?: number | null; note?: string | null } }>("/api/watch/:id", async (req) => {
+app.put<{ Params: { id: string }; Body: { maxAllIn?: number | null; note?: string | null } }>("/api/favourites/:id", async (req) => {
   await db.query(
-    `INSERT INTO watchlist (lot_id, max_all_in, note) VALUES ($1,$2,$3)
-     ON CONFLICT (lot_id) DO UPDATE SET max_all_in=EXCLUDED.max_all_in, note=EXCLUDED.note`,
-    [Number(req.params.id), req.body?.maxAllIn ?? null, req.body?.note ?? null],
+    `INSERT INTO favourites (user_id, lot_id, max_all_in, note) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (user_id, lot_id) DO UPDATE SET max_all_in=EXCLUDED.max_all_in, note=EXCLUDED.note`,
+    [uid(req), Number(req.params.id), req.body?.maxAllIn ?? null, req.body?.note ?? null],
   );
   return { ok: true };
 });
 
-app.delete<{ Params: { id: string } }>("/api/watch/:id", async (req) => {
-  await db.query(`DELETE FROM watchlist WHERE lot_id=$1`, [Number(req.params.id)]);
+app.delete<{ Params: { id: string } }>("/api/favourites/:id", async (req) => {
+  await db.query(`DELETE FROM favourites WHERE user_id=$1 AND lot_id=$2`, [uid(req), Number(req.params.id)]);
   return { ok: true };
 });
 
-app.get("/api/summary", async () => {
+/** One request to number8.bid now: the latest bid, close time and friends' bids for this lot. */
+app.post<{ Params: { id: string } }>("/api/lots/:id/refresh", async (req, reply) => {
+  const abort = new AbortController();
+  try {
+    await refreshLot(db, store, ctx.makeTransport(abort.signal, 1), Number(req.params.id));
+    return { ok: true };
+  } catch (e) {
+    return reply.code(502).send({ error: `Could not refresh: ${(e as Error).message}` });
+  }
+});
+
+app.get("/api/summary", async (req) => {
   const r = await db.query(`
     SELECT count(*) FILTER (WHERE status='open')::int AS live,
            count(*) FILTER (WHERE status='open' AND is_it)::int AS live_it,
            count(*) FILTER (WHERE status='closed')::int AS closed,
            count(*) FILTER (WHERE status='closed' AND final_bid > 0)::int AS sold,
            (SELECT count(*)::int FROM auctions WHERE ends_at > now()) AS live_auctions,
-           (SELECT count(*)::int FROM watchlist) AS watching,
+           (SELECT count(*)::int FROM favourites WHERE user_id=$1) AS watching,
            (SELECT max(finished_at) FROM scan_runs WHERE kind='live' AND state='complete') AS last_live_scan,
            (SELECT max(finished_at) FROM scan_runs WHERE kind='history' AND state IN ('complete','partial')) AS last_history_scan
-    FROM lots`);
+    FROM lots`, [uid(req)]);
   return r.rows[0];
 });
 

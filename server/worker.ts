@@ -1,10 +1,20 @@
 import { appContext } from "./context.ts";
+import { scheduleTick } from "./schedule.ts";
 import { workOneRun } from "./scan/runner.ts";
 
-/** Waits for queued scans and works them one at a time. Scans only start when someone asks. */
+/** Works queued scans one at a time, and queues scheduled ones (Settings → Scans). */
 export async function runWorkerLoop(deps: Awaited<ReturnType<typeof appContext>>, signal?: AbortSignal) {
   const log = (m: string) => console.log(`[worker] ${new Date().toISOString()} ${m}`);
+  let lastTick = 0;
   while (!signal?.aborted) {
+    if (Date.now() - lastTick > 60_000) {
+      lastTick = Date.now();
+      const started = await scheduleTick(deps.db).catch((e) => {
+        log(`schedule error: ${(e as Error).message}`);
+        return null;
+      });
+      if (started) log(`scheduled ${started} scan queued`);
+    }
     const worked = await workOneRun({ ...deps, log }).catch((e) => {
       log(`error: ${(e as Error).stack ?? e}`);
       return false;

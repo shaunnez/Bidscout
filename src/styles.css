@@ -236,3 +236,35 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   .timeline li > :last-child:not(:nth-child(2)) { display: none; }
   .runs { display: block; overflow-x: auto; }
 }
+
+/* Accounts, favourites and friends (18 Oct 2026) */
+.login-wrap { min-height: 100vh; display: grid; place-items: center; background: var(--ink); padding: 16px; }
+.login { width: min(380px, 100%); background: #fff; border-radius: 16px; padding: 28px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px #0006; }
+.login label, .card label:not(.check):not(.select) { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; }
+.login input, .card input:not([type=checkbox]), .new-user input:not([type=checkbox]) { font: inherit; font-weight: 400; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.brand.dark { color: var(--ink); font-size: 20px; }
+.ok { color: #05603a; background: var(--good-bg); padding: 8px 12px; border-radius: 8px; }
+.user-menu { position: relative; }
+.avatar { width: 34px; height: 34px; border-radius: 50%; border: 0; background: #ffffff22; color: #fff; font-weight: 800; }
+.menu { position: absolute; right: 0; top: 42px; background: #fff; color: var(--text); border-radius: 12px; box-shadow: 0 12px 30px #0b1e3340; min-width: 200px; padding: 6px; display: flex; flex-direction: column; z-index: 30; }
+.menu-who { display: flex; flex-direction: column; padding: 8px 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.menu button { border: 0; background: none; text-align: left; padding: 8px 10px; border-radius: 8px; }
+.menu button:hover { background: #eef2f6; }
+.panel-page { max-width: 860px; display: flex; flex-direction: column; gap: 16px; }
+.panel-page h1 { font-size: 22px; font-weight: 800; }
+.card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.card h3 { font-size: 14px; }
+.panel-page > .primary { align-self: flex-start; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.link.danger { color: var(--bad); }
+.new-user { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-top: 1px solid var(--line); padding-top: 12px; }
+.new-user h4 { width: 100%; margin: 0; font-size: 13px; }
+.social { display: flex; flex-wrap: wrap; gap: 4px; }
+.friend { background: #ede9fe; color: #5b21b6; border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 700; }
+.watchers { background: #fff6d6; color: #8a6100; border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 600; }
+.star { color: #e0a800; }
+.social-box { background: #faf8ff; border: 1px solid #e9e3fb; border-radius: 12px; padding: 12px 14px; }
+.social-head { display: flex; align-items: center; justify-content: space-between; }
+.small-btn { padding: 4px 10px !important; font-size: 12px; }
+.friend-line { margin: 0; color: #5b21b6; }
+.friend-bids { margin: 0; padding-left: 18px; font-size: 13px; }

@@ -20,16 +20,24 @@ test("bidder identities and personal contacts are removed, prices and premiums k
   assert.ok(redactions.includes("intro"));
 });
 
-test("hosted password gate: Basic auth with any username, constant-time compare", async () => {
-  const { passwordAccepted } = await import("../../server/auth.ts");
-  const basic = (u: string, p: string) => `Basic ${Buffer.from(`${u}:${p}`).toString("base64")}`;
-  assert.equal(passwordAccepted(undefined, ""), true, "no password set: open (local use)");
-  assert.equal(passwordAccepted(undefined, "s3cret"), false);
-  assert.equal(passwordAccepted(basic("shaun", "s3cret"), "s3cret"), true);
-  assert.equal(passwordAccepted(basic("", "s3cret"), "s3cret"), true);
-  assert.equal(passwordAccepted(basic("shaun", "wrong"), "s3cret"), false);
-  assert.equal(passwordAccepted(basic("a", "pass:with:colons"), "pass:with:colons"), true);
-  assert.equal(passwordAccepted("Bearer s3cret", "s3cret"), false);
+test("passwords: scrypt hashes verify, wrong ones don't, and rules are enforced", async () => {
+  const { hashPassword, verifyPassword, passwordProblem, usernameProblem, readCookie, LoginLimiter } = await import("../../server/auth.ts");
+  const h = await hashPassword("correct horse");
+  assert.match(h, /^scrypt\$16384\$8\$1\$/);
+  assert.equal(await verifyPassword("correct horse", h), true);
+  assert.equal(await verifyPassword("wrong horse", h), false);
+  assert.notEqual(await hashPassword("correct horse"), h, "salted");
+  assert.equal(passwordProblem("short"), "Use at least 8 characters.");
+  assert.equal(passwordProblem("long enough"), null);
+  assert.equal(usernameProblem("shaun"), null);
+  assert.ok(usernameProblem("no spaces allowed"));
+  assert.equal(readCookie("a=1; bidscout_session=abc%3D; b=2", "bidscout_session"), "abc=");
+  let t = 0;
+  const lim = new LoginLimiter(3, 1000, () => t);
+  lim.fail("u:x"); lim.fail("u:x"); lim.fail("u:x");
+  assert.equal(lim.blocked("u:x"), true);
+  t = 2000;
+  assert.equal(lim.blocked("u:x"), false, "window expires");
 });
 
 test("config: empty variables count as unset, so Railway's DATABASE_URL and PORT are used", async () => {

@@ -50,6 +50,7 @@ function site() {
   });
   const transport: Transport = {
     stats: { requests: 0, retries: 0, throttles: 0 },
+    parallelism: 4,
     async get() { throw new Error("unused"); },
     async post(p, form) {
       this.stats.requests++;
@@ -87,6 +88,12 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   let clock = NOW;
   const deps = { db, store, makeTransport: () => transport, now: () => clock };
 
+  // Two people in the group: one is lot 501's high bidder (list row "winner"), the other bid on it
+  // (lot page bid history, buyer_number 12). Both are matched before redaction.
+  const { hashPassword } = await import("../../server/auth.ts");
+  const alex = (await db.query(`INSERT INTO users (username, display_name, password_hash, n8_username) VALUES ('alex','Alex',$1,'Someone') RETURNING id`, [await hashPassword("password1")])).rows[0].id;
+  const sam = (await db.query(`INSERT INTO users (username, display_name, password_hash, n8_bidder_number) VALUES ('sam','Sam',$1,'12') RETURNING id`, [await hashPassword("password2")])).rows[0].id;
+
   // History first, so the live lot has a comparable sale.
   await startRun(db, "history");
   assert.equal(await workOneRun(deps), true);
@@ -108,6 +115,10 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   assert.deepEqual(lot.faults, ["no-charger"]);
   assert.deepEqual(lot.images, ["https://cdn.test/a.jpg", "https://cdn.test/b.jpg"]);
   assert.deepEqual(lot.bid_history, [{ bid: 10, at: "2026-10-16T03:47:43+1300" }]);
+  assert.equal(lot.friend_high_user_id, alex, "Alex is the high bidder on 501");
+  const fb = (await db.query(`SELECT user_id, kind, amount FROM friend_bids WHERE lot_id=501 ORDER BY kind, user_id`)).rows;
+  assert.ok(fb.some((r) => r.kind === "high_bidder" && r.user_id === alex));
+  assert.ok(fb.some((r) => r.kind === "bid" && r.user_id === sam && r.amount === 10));
   const past = (await db.query(`SELECT status, final_bid, machine_key FROM lots WHERE id=400`)).rows[0];
   assert.equal(past.status, "closed");
   assert.equal(past.final_bid, 300);
@@ -173,6 +184,26 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   // Evidence rows cannot be edited.
   await assert.rejects(db.query(`UPDATE spec_values SET quote='x'`), /immutable/);
   await assert.rejects(db.query(`UPDATE snapshots SET url='x'`), /immutable/);
+  await db.end();
+});
+
+test("schedule: live every N hours, weekly past-sales top-up, never alongside another scan", async () => {
+  const db = connect(url);
+  const { scheduleTick } = await import("../../server/schedule.ts");
+  const { saveScanSettings } = await import("../../server/settings.ts");
+  await db.query(`UPDATE scan_runs SET state='cancelled' WHERE state IN ('queued','running')`);
+  await saveScanSettings(db, { scheduleEnabled: true, liveEveryHours: 4, historyWeekly: true }, null);
+  const last = (await db.query(`SELECT max(created_at) AS t FROM scan_runs WHERE kind='live'`)).rows[0].t as Date;
+  assert.equal(await scheduleTick(db, new Date(last.getTime() + 3_600_000)), "history", "live ran an hour ago; history top-up is due");
+  assert.equal(await scheduleTick(db, new Date(last.getTime() + 5 * 3_600_000)), null, "a scan is already queued");
+  await db.query(`UPDATE scan_runs SET state='cancelled' WHERE state='queued'`);
+  assert.equal(await scheduleTick(db, new Date(last.getTime() + 5 * 3_600_000)), "live");
+  await db.query(`UPDATE scan_runs SET state='cancelled' WHERE state='queued'`);
+  await saveScanSettings(db, { scheduleEnabled: false }, null);
+  assert.equal(await scheduleTick(db, new Date(last.getTime() + 50 * 3_600_000)), null, "off means off");
+  const run = (await db.query(`SELECT trigger, options FROM scan_runs WHERE kind='history' ORDER BY id DESC LIMIT 1`)).rows[0];
+  assert.equal(run.trigger, "schedule");
+  assert.equal(run.options.untilKnown, true);
   await db.end();
 });
 
