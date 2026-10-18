@@ -8,7 +8,7 @@ import { stripContacts } from "./redact.ts";
  * Trade Me's own search, read the way a person sees it: one results page per search, and the
  * listing cards on it (title, location, closing date, price). Shaun decided on 18 Oct 2026 to
  * use Trade Me search even though its robots.txt disallows search pages for crawlers; it runs
- * only on a person's button press, at most two results pages per lookup, cached for 3 days and
+ * only on a person's button press, at most two results pages per lookup, cached for 7 days and
  * under the group's daily limit. No disguise: a plain browser, and if Trade Me blocks it, it stops.
  */
 

@@ -504,7 +504,8 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
     setBusy(true);
     setErr(null);
     try {
-      let r = fromLinks ? await api.tradeMeLinks(lot.id, pasted.slice(0, 5)) : await api.tradeMe(lot.id, query);
+      // "Look again" (there's an answer showing) always searches fresh.
+      let r = fromLinks ? await api.tradeMeLinks(lot.id, pasted.slice(0, 5)) : await api.tradeMe(lot.id, query, !!res);
       if (!r.cached) setRanHere((n) => n + 1);
       // A new lookup runs on the server; check on it every 2 seconds (a dropped check is retried).
       const until = Date.now() + 5 * 60_000;
@@ -553,7 +554,7 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
         <button className="primary small-btn" onClick={() => run()} disabled={busy || !query || (!state.available && !res)}>
           {busy ? "Reading Trade Me…" : res ? "Look again" : "Trade Me prices"}
         </button>
-        <span className="muted small">{state.available ? `${state.used + ranHere} of ${state.dailyLimit} lookups used today · answers kept 3 days` : state.reason}</span>
+        <span className="muted small">{state.available ? `${state.used + ranHere} of ${state.dailyLimit} lookups used today · answers kept 7 days; Look again searches fresh` : state.reason}</span>
       </div>
       {busy && <p className="muted small">Searching Trade Me for this model. Usually 10–30 seconds.</p>}
       {err && <p className="err small">{err}</p>}
@@ -642,7 +643,7 @@ function NewPrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; state
     setBusy(true);
     setErr(null);
     try {
-      setRes(await api.newPrice(lot.id, query));
+      setRes(await api.newPrice(lot.id, query, !!res));
     } catch (e) {
       setErr((e as Error).message);
     } finally {
