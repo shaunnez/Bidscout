@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cardsFromMarkdown, checkPage, isAccessory, parseCard, relevantCards, searchUrl, TradeMeBlocked } from "../../server/tmsearch.ts";
+import { Parallel } from "../../server/parallel.ts";
+import { cardsFromMarkdown, checkPage, isAccessory, parallelSearcher, parseCard, probeSearcher, relevantCards, searchUrl, TradeMeBlocked } from "../../server/tmsearch.ts";
 
 const TM = "https://www.trademe.co.nz/a/marketplace/computers/laptops/laptops/hp/listing";
 const card = (id: number, text: string, path = TM) => ({ url: `${path}/${id}`, listingId: String(id), text });
@@ -73,4 +74,35 @@ test("results pages: refusals and check pages stop the lookup; an empty page cou
   assert.throws(() => checkPage(page(200, "Trade Me")), (e) => !(e instanceof TradeMeBlocked) && /no listings/.test((e as Error).message));
   assert.doesNotThrow(() => checkPage(page(200, "Search Results Showing 0 results for 'zz' No results found")));
   assert.doesNotThrow(() => checkPage(page(200, "access denied", 2)), "a page with listings is accepted");
+});
+
+const parallelWith = (status: number, body: unknown, seen: Array<{ url: string; init: RequestInit }> = []) =>
+  new Parallel("k", { fetch: async (url, init) => (seen.push({ url, init }), new Response(JSON.stringify(body), { status })) });
+
+test("Parallel: asks for the whole page fresh, and its cards are read like Firecrawl's", async () => {
+  const seen: Array<{ url: string; init: RequestInit }> = [];
+  const md = `Showing 2 results\n[Auckland Closes: Fri, 23 Oct Lenovo ThinkPad T480 i5 Buy Now $350.00](${TM}/11)\n[Wellington Lenovo ThinkPad T480 $280.00](${TM}/12)`;
+  const p = parallelWith(200, { extract_id: "x", results: [{ url: searchUrl("t480"), title: "Search", excerpts: [], full_content: md }], errors: [] }, seen);
+  const r = await probeSearcher(parallelSearcher(p), "t480");
+  assert.equal(seen[0]!.url, "https://api.parallel.ai/v1/extract");
+  assert.equal((seen[0]!.init.headers as Record<string, string>)["x-api-key"], "k");
+  const body = JSON.parse(String(seen[0]!.init.body));
+  assert.deepEqual([body.urls, body.advanced_settings.full_content, body.advanced_settings.fetch_policy.disable_cache_fallback], [[searchUrl("t480")], true, true]);
+  assert.deepEqual([r.method, r.verdict, r.cards, r.priced, r.listingUrls], ["parallel", "ok", 2, 2, [`${TM}/11`, `${TM}/12`]]);
+  const noPrices = parallelWith(200, { extract_id: "x", results: [{ url: "u", full_content: `Showing 1 results\n[Lenovo ThinkPad T480](${TM}/13)` }], errors: [] });
+  const n = await probeSearcher(parallelSearcher(noPrices), "t480");
+  assert.deepEqual([n.verdict, n.cards, n.priced], ["failed", 1, 0], "listings without prices aren't reported as working");
+});
+
+test("Parallel: Trade Me's refusal is reported as blocked; an empty page shows how it started", async () => {
+  const refused = parallelWith(200, { extract_id: "x", results: [], errors: [{ url: "u", error_type: "fetch_error", http_status_code: 406, content: null }] });
+  const a = await probeSearcher(parallelSearcher(refused), "t480");
+  assert.deepEqual([a.verdict, a.status], ["blocked", 406]);
+  const unknown = parallelWith(200, { extract_id: "x", results: [], errors: [{ url: "u", error_type: "timeout", http_status_code: null }] });
+  assert.equal((await probeSearcher(parallelSearcher(unknown), "t480")).verdict, "failed");
+  const shell = parallelWith(200, { extract_id: "x", results: [{ url: "u", excerpts: ["Trade Me Marketplace. Loading…"] }], errors: [] });
+  const c = await probeSearcher(parallelSearcher(shell), "t480");
+  assert.deepEqual([c.verdict, c.cards, c.pageStart], ["failed", 0, "Trade Me Marketplace. Loading…"]);
+  const badKey = await probeSearcher(parallelSearcher(parallelWith(401, { type: "error", error: { message: "nope" } })), "t480");
+  assert.deepEqual([badKey.verdict, badKey.message], ["failed", "Parallel: the Parallel key was refused"]);
 });
