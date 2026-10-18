@@ -284,7 +284,7 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
   };
 });
 
-/** Trade Me prices for a lot (server/trademe.ts): a web search, or listing links the person pasted. Reuses answers under 3 days old. */
+/** Trade Me prices for a lot (server/trademe.ts): Trade Me search, or listing links the person pasted. Reuses answers under 3 days old. */
 app.post<{ Params: { id: string }; Body: { query?: string; links?: string[] } }>("/api/lots/:id/trademe", async (req, reply) => {
   try {
     const links = Array.isArray(req.body?.links) ? req.body.links.slice(0, 20).map(String) : undefined;

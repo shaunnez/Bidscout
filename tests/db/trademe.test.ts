@@ -85,12 +85,14 @@ test("Trade Me prices: off until enabled, reads only robots-allowed listings, co
   assert.equal(parts.verified, false, "a price not written on the page is kept but marked unconfirmed");
   await assert.rejects(db.query(`UPDATE price_lookup_items SET price=1`), /immutable/);
 
-  // Same search text within 3 days: the saved answer, no requests, and lot 502 remembers it too.
-  const again = await tradeMeLookup(deps, { lotId: 502, userId: user, query: "thinkpad t14" });
+  // Same search text within 3 days, for a lot of the same kind: the saved answer, no requests, and lot 510 remembers it too.
+  await db.query(`INSERT INTO auctions (id, title) VALUES (77, 'Test') ON CONFLICT DO NOTHING`);
+  await db.query(`INSERT INTO lots (id, auction_id, title, device_type, status) VALUES (510, 77, 'Lenovo ThinkPad T14 Gen 1 - Laptop', 'laptop', 'open') ON CONFLICT DO NOTHING`);
+  const again = await tradeMeLookup(deps, { lotId: 510, userId: user, query: "thinkpad t14" });
   assert.equal(again.cached, true);
   assert.equal(again.id, r.id);
   assert.equal(calls.length, 4);
-  assert.equal((await latestForLot(db, 502))?.id, r.id);
+  assert.equal((await latestForLot(db, 510))?.id, r.id);
   assert.equal((await latestForLot(db, 501))?.id, r.id);
   assert.equal(Number(live.buy_now), 650);
   assert.equal(live.buy_now_excerpt.slice(live.buy_now_start, live.buy_now_end), "$650");
@@ -98,13 +100,13 @@ test("Trade Me prices: off until enabled, reads only robots-allowed listings, co
   // Every listing page fails (an outage): recorded as failed, not cached as an empty answer.
   const down = fakeFirecrawl({ pagesFail: true });
   await assert.rejects(tradeMeLookup({ ...deps, firecrawl: down.fc }, { lotId: 503, userId: user, query: "lenovo m720q" }), /Couldn't read any of the 3 listings/);
-  assert.equal((await db.query(`SELECT status FROM price_lookups WHERE query_key='lenovo m720q'`)).rows[0].status, "failed");
+  assert.equal((await db.query(`SELECT status FROM price_lookups WHERE query='lenovo m720q'`)).rows[0].status, "failed");
   assert.equal(await latestForLot(db, 503), null, "a failed lookup isn't shown as the lot's answer");
 
   // Out of credits: recorded as a failed lookup (it counts toward the limit) and reported.
   const broke = fakeFirecrawl({ outOfCredits: true });
   await assert.rejects(tradeMeLookup({ ...deps, firecrawl: broke.fc }, { lotId: 501, userId: user, query: "dell latitude 5520" }), /out of credits/);
-  const failed = (await db.query(`SELECT status, error FROM price_lookups WHERE query_key='dell latitude 5520'`)).rows[0];
+  const failed = (await db.query(`SELECT status, error FROM price_lookups WHERE query='dell latitude 5520'`)).rows[0];
   assert.equal(failed.status, "failed");
 
   // Two people, different searches, one slot left: only one goes to Firecrawl.
@@ -202,7 +204,7 @@ test("Trade Me prices: Trade Me's own search, the next searcher when one fails, 
       searched.push(decodeURIComponent(u.split("search_string=")[1]!));
       const exact = u.includes("i5");
       return {
-        status: 200, pageSha: "abc",
+        status: 200, pageSha: "abc", text: "",
         cards: exact
           ? [{ url: `${LAP}/1`, listingId: "1", text: "Waikato Closes: Fri, 23 Oct HP ProBook 450 G8 i5 Buy Now $599.00" }]
           : [
@@ -213,13 +215,31 @@ test("Trade Me prices: Trade Me's own search, the next searcher when one fails, 
       };
     },
   };
-  const deps = { db, firecrawl: null, robots, sleep: async () => {}, searchers: [broken, chromium] };
+  const deps = { db, firecrawl: null, robots, sleep: async () => {}, searchers: [chromium] };
   const r = await tradeMeLookup(deps, { lotId: 9001, userId: user, query: "HP ProBook 450 G8 i5-1135G7" });
-  assert.equal(r.method, "trademe-search:chromium", "Firecrawl failed, so Chromium ran the search");
+  assert.equal(r.method, "trademe-search:chromium");
   assert.deepEqual(searched, ["HP ProBook 450 G8 i5-1135G7", "HP ProBook 450 G8"], "fewer than 3 matches, so the make and model were searched too");
   assert.deepEqual(r.items.map((i: any) => [i.listing_id, Number(i.price), i.price_kind, i.reserve]), [["1", 599, "buy_now", null], ["2", 600, "current_bid", "none"]], "the battery is left out");
   assert.equal(r.items[1].excerpt.slice(r.items[1].quote_start, r.items[1].quote_end), "$600.00");
   assert.equal(r.items[1].excerpt.slice(r.items[1].buy_now_start, r.items[1].buy_now_end), "$650.00");
+  assert.equal(r.items[0].source_url, "https://www.trademe.co.nz/a/marketplace/search?search_string=HP%20ProBook%20450%20G8%20i5-1135G7", "the quote cites the results page it came from");
+  assert.equal(r.items[1].source_url, "https://www.trademe.co.nz/a/marketplace/search?search_string=HP%20ProBook%20450%20G8");
+
+  // Firecrawl errors, or shows an unexplained empty page: Chromium takes over, but two results pages per lookup in all, so it gets one.
+  for (const [first, q] of [[broken, "HP ProBook 450 G8 i5-8250U"], [{ name: "firecrawl", async search() { return { status: 200, pageSha: "", cards: [], text: "Trade Me" }; } }, "HP ProBook 450 G8 i7-1165G7"]] as const) {
+    searched.length = 0;
+    const r2 = await tradeMeLookup({ ...deps, searchers: [first as TradeMeSearcher, chromium] }, { lotId: 9001, userId: user, query: q });
+    assert.equal(r2.method, "trademe-search:chromium");
+    assert.deepEqual(searched, [q]);
+  }
+
+  // A saved answer isn't reused for a different kind of lot with the same search text.
+  await db.query(`INSERT INTO lots (id, auction_id, title, device_type, status) VALUES (9002, 77, 'HP ProBook 450 G8 charger', 'laptop', 'open') ON CONFLICT DO NOTHING`);
+  searched.length = 0;
+  const acc = await tradeMeLookup(deps, { lotId: 9002, userId: user, query: "HP ProBook 450 G8 i5-1135G7" });
+  assert.equal(acc.cached, false);
+  assert.ok(acc.items.some((i: any) => i.listing_id === "3"), "the charger lot keeps the battery listing");
+  assert.equal((await tradeMeLookup(deps, { lotId: 9001, userId: user, query: "HP ProBook 450 G8 i5-1135G7" })).cached, true);
 
   // Trade Me search unavailable, Firecrawl present: the web-search route still runs.
   const webCalls: string[] = [];
@@ -228,11 +248,27 @@ test("Trade Me prices: Trade Me's own search, the next searcher when one fails, 
     async scrape() { throw new Error("not used"); },
     async page() { throw new Error("not used"); },
   };
-  const down: TradeMeSearcher = { name: "chromium", async search() { return { status: 406, pageSha: "", cards: [] }; } };
+  const down: TradeMeSearcher = { name: "chromium", async search() { return { status: 503, pageSha: "", cards: [], text: "" }; } };
   const w = await tradeMeLookup({ ...deps, firecrawl: fc, searchers: [down] }, { lotId: 9001, userId: user, query: "dell latitude 5520" });
   assert.equal(w.method, "web-search");
   assert.equal(webCalls[0], "search dell latitude 5520");
-  // No Firecrawl and Trade Me blocks: a clear failure.
-  await assert.rejects(tradeMeLookup({ ...deps, searchers: [down] }, { lotId: 9001, userId: user, query: "lenovo x1 carbon" }), /HTTP 406/);
+  assert.equal((await tradeMeStatus(db, { firecrawl: null, searchers: [chromium] })).pasteLinks, false, "pasted links need Firecrawl");
+  assert.equal((await tradeMeStatus(db, { firecrawl: fc, searchers: [chromium] })).pasteLinks, true);
+  // No Firecrawl and Trade Me unavailable: a clear failure.
+  await assert.rejects(tradeMeLookup({ ...deps, searchers: [down] }, { lotId: 9001, userId: user, query: "lenovo x1 carbon" }), /HTTP 503/);
+
+  // Trade Me refuses or shows a check page: the lookup stops, with no web search, and nothing is kept as an answer.
+  webCalls.length = 0;
+  const refused: TradeMeSearcher = { name: "chromium", async search() { return { status: 403, pageSha: "", cards: [], text: "" }; } };
+  await assert.rejects(tradeMeLookup({ ...deps, firecrawl: fc, searchers: [refused] }, { lotId: 9001, userId: user, query: "dell latitude 7490" }), /refused the search \(HTTP 403\)/);
+  const check: TradeMeSearcher = { name: "chromium", async search() { return { status: 200, pageSha: "", cards: [], text: "Please verify you are human" }; } };
+  await assert.rejects(tradeMeLookup({ ...deps, firecrawl: fc, searchers: [check, chromium] }, { lotId: 9001, userId: user, query: "dell latitude 7400" }), /check page/);
+  assert.deepEqual(webCalls, []);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM price_lookups WHERE query LIKE 'dell latitude 74%' AND status='ok'`)).rows[0].n, 0);
+
+  // Trade Me says there are no results: that is an answer.
+  const none: TradeMeSearcher = { name: "chromium", async search() { return { status: 200, pageSha: "x", cards: [], text: "Showing 0 results for 'zz'. No results found" }; } };
+  const empty = await tradeMeLookup({ ...deps, searchers: [none] }, { lotId: 9001, userId: user, query: "zzqx laptop model" });
+  assert.deepEqual([empty.status, empty.items.length], ["ok", 0]);
   await db.end();
 });

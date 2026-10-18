@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cardsFromMarkdown, parseCard, relevantCards, searchUrl } from "../../server/tmsearch.ts";
+import { cardsFromMarkdown, checkPage, isAccessory, parseCard, relevantCards, searchUrl, TradeMeBlocked } from "../../server/tmsearch.ts";
 
 const TM = "https://www.trademe.co.nz/a/marketplace/computers/laptops/laptops/hp/listing";
 const card = (id: number, text: string, path = TM) => ({ url: `${path}/${id}`, listingId: String(id), text });
@@ -40,4 +40,37 @@ test("relevance: accessories are dropped, and the lot's own category is preferre
   assert.deepEqual(relevantCards(items, null).map((i) => i.listing_id), ["1", "4"]);
   assert.deepEqual(relevantCards(items, "laptop", "Laptop battery lot").map((i) => i.listing_id), ["1", "2", "3", "4"], "an accessory lot keeps accessories, from any category");
   assert.equal(searchUrl("HP ProBook 450 G8"), "https://www.trademe.co.nz/a/marketplace/search?search_string=HP%20ProBook%20450%20G8");
+});
+
+test("start prices keep their kind, and a card whose only amount is shipping has no price", () => {
+  const s = parseCard(card(6, "Otago Closes: Sun, 25 Oct HP ProBook 450 G8 Start price $100.00"));
+  assert.deepEqual([s.price, s.price_kind], [100, "starting"]);
+  assert.equal(s.excerpt.slice(s.quote_start!, s.quote_end!), "$100.00");
+  const r = parseCard(card(7, "Otago Closes: Sun, 25 Oct HP ProBook 450 G8 Reserve not met Start price $1.00"));
+  assert.deepEqual([r.price_kind, r.reserve], ["starting", "not met"]);
+  const f = parseCard(card(8, "Otago Closes: Sun, 25 Oct HP ProBook 450 G8 Shipping from $15.00"));
+  assert.deepEqual([f.price, f.price_kind, f.quote_start], [null, null, null]);
+});
+
+test("accessories: the main item decides, not a bundled charger or bag", () => {
+  assert.equal(isAccessory("HP ProBook 450 G8 laptop with charger"), false);
+  assert.equal(isAccessory("HP ProBook 450 G8 + bag"), false);
+  assert.equal(isAccessory("Dell Latitude 5490, charger included"), false);
+  assert.equal(isAccessory("HP ProBook 450 G8 . i5 . backlit keyboard"), false);
+  assert.equal(isAccessory("HP 65W charger for ProBook 450"), true);
+  assert.equal(isAccessory("Battery for HP ProBook 450 G8"), true);
+  assert.equal(isAccessory("Laptop bag with shoulder strap"), true);
+  const items = [card(1, "Waikato Closes: Fri, 23 Oct HP ProBook 450 G8 with charger Buy Now $599.00"), card(2, "Auckland Closes: Thu, 22 Oct HP 65W charger Buy Now $19.90")].map(parseCard);
+  assert.deepEqual(relevantCards(items, "laptop", "HP ProBook 450 G8 Laptop with Charger").map((i) => i.listing_id), ["1"]);
+});
+
+test("results pages: refusals and check pages stop the lookup; an empty page counts only when it says no results", () => {
+  const page = (status: number | null, text: string, cards = 0) => ({ status, text, pageSha: "", cards: Array.from({ length: cards }, (_, i) => card(i, "x")) });
+  assert.throws(() => checkPage(page(403, "")), TradeMeBlocked);
+  assert.throws(() => checkPage(page(429, "")), TradeMeBlocked);
+  assert.throws(() => checkPage(page(200, "Checking your browser before accessing")), TradeMeBlocked);
+  assert.throws(() => checkPage(page(503, "")), (e) => !(e instanceof TradeMeBlocked));
+  assert.throws(() => checkPage(page(200, "Trade Me")), (e) => !(e instanceof TradeMeBlocked) && /no listings/.test((e as Error).message));
+  assert.doesNotThrow(() => checkPage(page(200, "Search Results Showing 0 results for 'zz' No results found")));
+  assert.doesNotThrow(() => checkPage(page(200, "access denied", 2)), "a page with listings is accepted");
 });

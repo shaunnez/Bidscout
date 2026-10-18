@@ -396,7 +396,8 @@ function SourcePanel({ request, onClose }: { request: CiteRequest; onClose: () =
               <span className="dim">{c.excerpt.slice(c.end)}</span>
             </div>
             <dl className="meta-list">
-              <dt>Page</dt><dd><a href={c.url} target="_blank" rel="noreferrer">Open on {c.site} ↗</a></dd>
+              <dt>Page</dt><dd><a href={c.url} target="_blank" rel="noreferrer">{c.listingUrl ? "Open the results page" : `Open on ${c.site}`} ↗</a>{c.listingUrl && <div className="small muted">A live page: results change as listings come and go.</div>}</dd>
+              {c.listingUrl && <><dt>Listing</dt><dd><a href={c.listingUrl} target="_blank" rel="noreferrer">Open the listing ↗</a></dd></>}
               <dt>Read</dt><dd>{nzDate(c.fetchedAt)}</dd>
               <dt>Page text</dt><dd><code>sha256 {c.sha256.slice(0, 16)}…</code><div className="small muted">Only these words were kept, with any contact details removed.</div></dd>
             </dl>
@@ -517,8 +518,8 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
     onCite({
       title: buyNow ? "Trade Me Buy Now" : "Trade Me price",
       load: async () => buyNow
-        ? { kind: "external", site: "Trade Me", url: i.url, value: `Buy Now ${money(i.buy_now)}`, excerpt: i.buy_now_excerpt!, start: i.buy_now_start!, end: i.buy_now_end!, fetchedAt: i.fetched_at, sha256: i.page_sha256, where }
-        : { kind: "external", site: "Trade Me", url: i.url, value: `${TM_KIND[i.price_kind ?? ""] ?? "Price"} ${money(i.price)}`, excerpt: i.excerpt!, start: i.quote_start!, end: i.quote_end!, fetchedAt: i.fetched_at, sha256: i.page_sha256, where },
+        ? { kind: "external", site: "Trade Me", url: i.source_url ?? i.url, listingUrl: i.source_url ? i.url : undefined, value: `Buy Now ${money(i.buy_now)}`, excerpt: i.buy_now_excerpt!, start: i.buy_now_start!, end: i.buy_now_end!, fetchedAt: i.fetched_at, sha256: i.page_sha256, where }
+        : { kind: "external", site: "Trade Me", url: i.source_url ?? i.url, listingUrl: i.source_url ? i.url : undefined, value: `${TM_KIND[i.price_kind ?? ""] ?? "Price"} ${money(i.price)}`, excerpt: i.excerpt!, start: i.quote_start!, end: i.quote_end!, fetchedAt: i.fetched_at, sha256: i.page_sha256, where },
     });
   return (
     <div className="tm">
@@ -528,15 +529,15 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
         </button>
         <span className="muted small">{state.available ? `${state.used + ranHere} of ${state.dailyLimit} lookups used today · answers kept 3 days` : state.reason}</span>
       </div>
-      {busy && <p className="muted small">Finding listings with a web search, then reading up to 5 of them one at a time. Usually 20–60 seconds.</p>}
+      {busy && <p className="muted small">Searching Trade Me for this model. Usually 10–30 seconds.</p>}
       {err && <p className="err small">{err}</p>}
-      {(state.available || res) && (
+      {state.pasteLinks && (
         <details className="tm-paste" open={!!res && res.found === 0}>
           <summary>Found them on Trade Me yourself? Paste up to 5 listing links</summary>
           <textarea value={links} onChange={(e) => setLinks(e.target.value)} rows={3} spellCheck={false}
             placeholder="https://www.trademe.co.nz/a/marketplace/computers/…/listing/1234567890" />
           <div className="tm-head">
-            <button className="ghost small-btn" disabled={busy || !pasted.length || !state.available} onClick={() => run(true)}>
+            <button className="ghost small-btn" disabled={busy || !pasted.length || !state.pasteLinks} onClick={() => run(true)}>
               Read {pasted.length ? Math.min(5, pasted.length) : ""} listing{pasted.length === 1 ? "" : "s"}
             </button>
             <span className="muted small">{pasted.length > 5 ? "Only the first 5 are read. " : ""}Counts as one lookup. Each page is checked against Trade Me's robots.txt first.</span>

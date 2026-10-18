@@ -21,6 +21,8 @@ export interface SearchPage {
   cards: SearchCard[];
   pageSha: string;
   status: number | null;
+  /** The page's visible text (or markdown), to tell "no results" from a check page. */
+  text: string;
 }
 
 export interface TradeMeSearcher {
@@ -31,6 +33,25 @@ export interface TradeMeSearcher {
 const LISTING_HREF = /^https:\/\/(?:www\.)?trademe\.co\.nz\/a\/marketplace\/[^?#\s)]*?\/listing\/(\d+)/i;
 
 export const searchUrl = (q: string) => `https://www.trademe.co.nz/a/marketplace/search?search_string=${encodeURIComponent(q)}`;
+
+/** Trade Me refused or challenged the search: the lookup stops here, with no other route tried. */
+export class TradeMeBlocked extends Error {}
+
+const BLOCK_STATUS = new Set([401, 403, 406, 429, 451]);
+const NO_RESULTS = /Showing 0 results|No results found|couldn't find anything matching/i;
+const CHALLENGE = /captcha|verify (?:that )?you(?: are|'re) (?:a )?human|are you a robot|unusual traffic|access denied|request (?:was |has been )?blocked|checking your browser|enable javascript and cookies/i;
+
+/**
+ * Accepts a results page or says why not. A refusal or check page is TradeMeBlocked; a page with
+ * no listings counts as an answer only when it says there were no results.
+ */
+export function checkPage(page: SearchPage): void {
+  if (page.status && BLOCK_STATUS.has(page.status)) throw new TradeMeBlocked(`Trade Me refused the search (HTTP ${page.status}), so BidScout stopped there.`);
+  if (page.status && page.status >= 400) throw new Error(`Trade Me answered HTTP ${page.status} to the search`);
+  if (page.cards.length) return;
+  if (CHALLENGE.test(page.text)) throw new TradeMeBlocked("Trade Me showed a check page instead of results, so BidScout stopped there.");
+  if (!NO_RESULTS.test(page.text)) throw new Error("Trade Me's search page showed no listings and no \"no results\" message, so it wasn't kept as an answer.");
+}
 
 const sha = (s: string) => crypto.createHash("sha256").update(s).digest("hex");
 const tidy = (s: string) => s.replace(/!\[[^\]]*\]\([^)]*\)/g, " ").replace(/[[\]#*_`>|]/g, " ").replace(/\s+/g, " ").trim();
@@ -58,7 +79,7 @@ export function firecrawlSearcher(fc: FirecrawlClient): TradeMeSearcher {
     name: "firecrawl",
     async search(url) {
       const page = await fc.page(url, { maxAgeMs: 3_600_000 });
-      return { cards: cardsFromMarkdown(page.markdown), pageSha: sha(page.markdown), status: page.statusCode };
+      return { cards: cardsFromMarkdown(page.markdown), pageSha: sha(page.markdown), status: page.statusCode, text: page.markdown };
     },
   };
 }
@@ -83,8 +104,11 @@ export function chromiumSearcher(executablePath: string): TradeMeSearcher {
           const page = await (await browser.newContext({ locale: "en-NZ", viewport: { width: 1280, height: 900 } })).newPage();
           const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
           const status = res?.status() ?? null;
-          if (status && status >= 400) return { cards: [], pageSha: "", status };
-          await page.waitForSelector('a[href*="/listing/"]', { timeout: 20_000 }).catch(() => {});
+          if (status && status >= 400) return { cards: [], pageSha: "", status, text: "" };
+          // Listings, or Trade Me saying there are none.
+          await page
+            .waitForFunction(() => !!document.querySelector('a[href*="/listing/"]') || /Showing 0 results|No results found/i.test(document.body?.innerText ?? ""), null, { timeout: 20_000 })
+            .catch(() => {});
           const raw = await page.evaluate(() =>
             [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/listing/"]')].map((a) => ({ href: a.href, text: a.innerText || "" })),
           );
@@ -94,7 +118,8 @@ export function chromiumSearcher(executablePath: string): TradeMeSearcher {
             const text = r.text.replace(/\s+/g, " ").trim();
             if (m && text && !cards.has(m[1]!)) cards.set(m[1]!, { url: m[0], listingId: m[1]!, text });
           }
-          return { cards: [...cards.values()], pageSha: sha(raw.map((r) => `${r.href} ${r.text}`).join("\n")), status };
+          const text = cards.size ? "" : await page.evaluate(() => document.body?.innerText ?? "");
+          return { cards: [...cards.values()], pageSha: sha(raw.map((r) => `${r.href} ${r.text}`).join("\n")), status, text };
         } finally {
           await browser.close();
         }
@@ -112,7 +137,7 @@ export interface CardItem {
   location: string | null;
   closes: string | null;
   price: number | null;
-  price_kind: "current_bid" | "buy_now" | "asking" | null;
+  price_kind: "current_bid" | "buy_now" | "asking" | "starting" | null;
   buy_now: number | null;
   reserve: "met" | "not met" | "none" | null;
   excerpt: string;
@@ -138,14 +163,15 @@ export function parseCard(card: SearchCard): CardItem {
   const stop = /(Free shipping|Shipping from|\$[\d,.]+ shipping|Pick-?ups?\b|Expected delivery|No reserve|Reserve (?:not )?met|Buy Now|Asking price|Current bid|Start price|\$\d)/i.exec(text.slice(afterCloses));
   const title = text.slice(afterCloses, stop ? afterCloses + stop.index : undefined).replace(/^[\s.·-]+|[\s.·-]+$/g, "") || null;
   const bid = new RegExp(`(No reserve|Reserve met|Reserve not met|Current bid)\\s*${PRICE}`, "i").exec(text);
+  const start = new RegExp(`Start(?:ing)? price\\s*${PRICE}`, "i").exec(text);
   const buy = new RegExp(`Buy Now\\s*${PRICE}`, "i").exec(text);
-  const asking = new RegExp(`(?:Asking price|Price)\\s*${PRICE}`, "i").exec(text);
+  const asking = new RegExp(`(?:Asking price|(?<!start\\s|starting\\s)Price)\\s*${PRICE}`, "i").exec(text);
   const at = (m: RegExpExecArray | null) => (m ? { start: m.index + m[0].lastIndexOf("$"), end: m.index + m[0].length } : null);
-  let main: RegExpExecArray | null = bid ?? buy ?? asking;
-  let kind: CardItem["price_kind"] = bid ? "current_bid" : buy ? "buy_now" : asking ? "asking" : null;
+  let main: RegExpExecArray | null = bid ?? start ?? buy ?? asking;
+  let kind: CardItem["price_kind"] = bid ? "current_bid" : start ? "starting" : buy ? "buy_now" : asking ? "asking" : null;
   if (!main) {
-    // A bare price that isn't shipping.
-    const any = [...text.matchAll(new RegExp(PRICE, "g"))].find((m) => !/shipping\s*$/i.test(text.slice(Math.max(0, m.index! - 14), m.index)) && !/^\s*shipping/i.test(text.slice(m.index! + m[0].length)));
+    // A bare price that isn't shipping ("Shipping from $15.00", "$15.00 shipping").
+    const any = [...text.matchAll(new RegExp(PRICE, "g"))].find((m) => !/shipping(?:\s+from)?\s*$/i.test(text.slice(Math.max(0, m.index! - 20), m.index)) && !/^\s*shipping/i.test(text.slice(m.index! + m[0].length)));
     if (any) {
       main = any as unknown as RegExpExecArray;
       kind = "asking";
@@ -153,7 +179,7 @@ export function parseCard(card: SearchCard): CardItem {
   }
   const mainAt = at(main);
   const buyAt = at(buy);
-  const reserve = bid ? (/not met/i.test(bid[1]!) ? "not met" : /no reserve/i.test(bid[1]!) ? "none" : /met/i.test(bid[1]!) ? "met" : null) : null;
+  const reserve = /Reserve not met/i.test(text) ? "not met" : /No reserve/i.test(text) ? "none" : /Reserve met/i.test(text) ? "met" : null;
   return {
     url: card.url, listing_id: card.listingId, title, location, closes: closes?.[1] ?? null,
     price: main ? money(main[main.length - 1]!) : null, price_kind: kind,
@@ -176,10 +202,29 @@ const CATEGORY_HINT: Record<string, string> = {
   monitor: "/computers/monitors/",
 };
 
+/**
+ * Is the item itself an accessory? Only the main part of the title counts: "HP ProBook with
+ * charger", "… + bag", "… charger included" or "…, backlit keyboard" are laptops.
+ */
+export function isAccessory(title: string): boolean {
+  const main = title
+    .replace(/\s(?:with|w\/|incl(?:udes?|uding|\.)?|inc\.?|plus|\+|&)\s.*$/i, "")
+    .replace(/\b\w+(?:\s+\w+)?\s+included\b/gi, " ")
+    .split(/\s[.·|–-]\s|,|\(/)[0]!;
+  return ACCESSORY.test(main);
+}
+
+/** What the filtering in relevantCards depends on, so saved answers are only reused for alike lots. */
+export function filterKey(deviceType: string | null, lotTitle = ""): string {
+  if (isAccessory(lotTitle)) return "|accessory";
+  const hint = deviceType ? CATEGORY_HINT[deviceType] : undefined;
+  return hint ? `|${hint}` : "";
+}
+
 /** Drops accessories and keeps the lot's own category when any results are in it (unless the lot is itself an accessory). */
 export function relevantCards(items: CardItem[], deviceType: string | null, lotTitle = ""): CardItem[] {
-  const lotIsAccessory = ACCESSORY.test(lotTitle);
-  let kept = items.filter((i) => i.price !== null && (lotIsAccessory || !ACCESSORY.test(i.title ?? "")));
+  const lotIsAccessory = isAccessory(lotTitle);
+  let kept = items.filter((i) => i.price !== null && (lotIsAccessory || !isAccessory(i.title ?? "")));
   const hint = deviceType ? CATEGORY_HINT[deviceType] : undefined;
   if (hint && !lotIsAccessory && kept.some((i) => i.url.includes(hint))) kept = kept.filter((i) => i.url.includes(hint));
   return kept;

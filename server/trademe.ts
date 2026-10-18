@@ -4,21 +4,25 @@ import type { FirecrawlClient } from "./firecrawl.ts";
 import { stripContacts } from "./redact.ts";
 import { parseRobots, robotsAllows, type Robots } from "./robots.ts";
 import { getTradeMeSettings } from "./settings.ts";
-import { parseCard, relevantCards, searchUrl, type CardItem, type TradeMeSearcher } from "./tmsearch.ts";
+import { checkPage, filterKey, parseCard, relevantCards, searchUrl, TradeMeBlocked, type CardItem, type TradeMeSearcher } from "./tmsearch.ts";
 
 /**
  * Trade Me prices for a lot, on demand (a button in the lot drawer). Runs only when an admin has
- * turned it on and a Firecrawl key is set.
+ * turned it on, and needs Chromium or a Firecrawl key.
  *
- *  1. Firecrawl web search for the lot's search text, limited to trademe.co.nz. BidScout never
- *     opens Trade Me's own search pages: its robots.txt disallows them.
- *  2. Up to MAX_LISTINGS marketplace listing pages from those results, each checked against
- *     Trade Me's robots.txt first, read one at a time by Firecrawl (its servers, its cache of up
- *     to a day), with structured extraction of price, status and condition.
+ *  1. Trade Me's own search results page for the lot's search text (server/tmsearch.ts), through
+ *     Firecrawl or a plain headless Chromium: at most MAX_SEARCH_PAGES pages per lookup in all.
+ *     Each listing card's price is quoted from the card text. If Trade Me refuses the search or
+ *     shows a check page, the lookup stops there.
+ *  2. Otherwise, if the search couldn't be read and there is Firecrawl: a web search limited to
+ *     trademe.co.nz, then up to MAX_LISTINGS listing pages from it (or the links a person pasted),
+ *     each checked against Trade Me's robots.txt first and read one at a time by Firecrawl, with
+ *     structured extraction of price, status and condition.
  *  3. Each price is looked for in the page text. When found, the words around it (contact
  *     details removed) are kept as the citation; the page itself is not stored.
  *
- * Answers are reused for CACHE_DAYS for the same search text; the group shares a daily limit.
+ * Answers are reused for CACHE_DAYS for the same search text and kind of lot; the group shares a
+ * daily limit.
  */
 
 export const MAX_LISTINGS = 5;
@@ -186,7 +190,8 @@ export async function tradeMeStatus(db: Pick<Db, "query">, ways: { firecrawl: Fi
   const used = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE source='trademe' AND created_at > now() - interval '24 hours'`)).rows[0].n);
   const ready = !!ways.firecrawl || !!ways.searchers?.length;
   const reason = !ready ? "Needs Chromium (in the Docker image) or a Firecrawl API key (FIRECRAWL_API_KEY)." : !s.enabled ? "An admin can turn Trade Me prices on in Settings." : used >= s.dailyLimit ? `The group's ${s.dailyLimit} lookups for the last 24 hours are used up.` : null;
-  return { available: !reason, reason, used, dailyLimit: s.dailyLimit };
+  // Pasted listing pages are read through Firecrawl only.
+  return { available: !reason, reason, used, dailyLimit: s.dailyLimit, pasteLinks: !reason && !!ways.firecrawl };
 }
 
 /** The newest successful lookup this lot ran or reused. */
@@ -249,6 +254,8 @@ export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | n
     if (key.length < 3) throw new LookupError("Search text is too short.", 400);
     const lot = input.lotId === null ? null : (await db.query(`SELECT device_type, title FROM lots WHERE id=$1`, [input.lotId])).rows[0];
     plan = { kind: "search", query, deviceType: lot?.device_type ?? null, lotTitle: lot?.title ?? "" };
+    // Results are filtered for the lot's kind, so a saved answer is shared only by alike lots.
+    key += filterKey(plan.deviceType, plan.lotTitle);
   }
 
   const cached = (await db.query(
@@ -293,11 +300,12 @@ async function reserve(deps: LookupDeps, input: { lotId: number | null; userId: 
   });
 }
 
-type StoredItem = TradeMeItem & { reserve?: string | null };
+type StoredItem = TradeMeItem & { reserve?: string | null; source_url?: string | null };
 
-/** A results card as a stored item: an open listing, its price quoted from the card text. */
-function cardToItem(c: CardItem, pageSha: string, at: Date): StoredItem {
+/** A results card as a stored item: an open listing, its price quoted from the card text on the results page `source`. */
+function cardToItem(c: CardItem, source: string, pageSha: string, at: Date): StoredItem {
   return {
+    source_url: source,
     url: c.url, listing_id: c.listing_id, title: c.title, status: "open", price: c.price, price_kind: c.price_kind,
     buy_now: c.buy_now, buy_now_excerpt: c.buy_now !== null ? c.excerpt : null, buy_now_start: c.buy_now_start, buy_now_end: c.buy_now_end,
     bid_count: null, condition: null, closes: c.closes, location: c.location,
@@ -307,31 +315,37 @@ function cardToItem(c: CardItem, pageSha: string, at: Date): StoredItem {
 }
 
 const MAX_SEARCH_ITEMS = 10;
+/** Results pages per lookup, across every searcher tried. */
+const MAX_SEARCH_PAGES = 2;
 
 /**
  * Trade Me's own search: the exact text, then (if fewer than 3 relevant listings) the make and
- * model only. Each searcher is tried in turn; one that errors, or (Firecrawl) shows no listings,
- * hands over to the next.
+ * model only. Each searcher is tried in turn while pages are left; one that errors or shows an
+ * unexplained empty page hands over to the next. A refusal or check page (TradeMeBlocked) ends it.
  */
 export async function searchTradeMe(searchers: TradeMeSearcher[], plan: { query: string; deviceType: string | null; lotTitle: string }, now: () => Date) {
   let lastError: Error | null = null;
+  let pagesLeft = MAX_SEARCH_PAGES;
   for (const s of searchers) {
+    if (!pagesLeft) break;
     try {
       const items = new Map<string, StoredItem>();
       const queries: string[] = [];
       let searched = 0;
       for (const q of [plan.query, broaderQuery(plan.query)]) {
-        if (!q || items.size >= 3) continue;
+        if (!q || items.size >= 3 || !pagesLeft) continue;
+        pagesLeft--;
         queries.push(q);
-        const page = await s.search(searchUrl(q));
-        if (page.status && page.status >= 400) throw new Error(`Trade Me answered HTTP ${page.status} to the search`);
-        if (!page.cards.length && s.name === "firecrawl" && searchers.length > 1) throw new Error("Firecrawl showed no listings");
+        const url = searchUrl(q);
+        const page = await s.search(url);
+        checkPage(page);
         searched += page.cards.length;
         for (const c of relevantCards(page.cards.map(parseCard), plan.deviceType, plan.lotTitle))
-          if (!items.has(c.listing_id) && items.size < MAX_SEARCH_ITEMS) items.set(c.listing_id, cardToItem(c, page.pageSha, now()));
+          if (!items.has(c.listing_id) && items.size < MAX_SEARCH_ITEMS) items.set(c.listing_id, cardToItem(c, url, page.pageSha, now()));
       }
       return { method: s.name, items: [...items.values()], queries, searched };
     } catch (e) {
+      if (e instanceof TradeMeBlocked) throw e;
       lastError = e as Error;
     }
   }
@@ -360,8 +374,9 @@ async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number)
         candidates = r.items.length;
         done = true;
       } catch (e) {
-        // Trade Me search couldn't be read: fall back to finding listings with a web search, if there's Firecrawl.
-        if (!deps.firecrawl) throw e;
+        // Trade Me search couldn't be read: fall back to finding listings with a web search, if there's
+        // Firecrawl. Not when Trade Me refused it: then the lookup stops.
+        if (!deps.firecrawl || e instanceof TradeMeBlocked) throw e;
       }
     }
     if (!done) {
@@ -421,10 +436,10 @@ async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number)
     for (const it of items)
       await c.query(
         `INSERT INTO price_lookup_items (lookup_id, url, listing_id, title, status, price, price_kind, buy_now, buy_now_excerpt, buy_now_start,
-           buy_now_end, bid_count, condition, closes, location, excerpt, quote_start, quote_end, verified, page_sha256, fetched_at, reserve)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+           buy_now_end, bid_count, condition, closes, location, excerpt, quote_start, quote_end, verified, page_sha256, fetched_at, reserve, source_url)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
         [id, it.url, it.listing_id, it.title, it.status, it.price, it.price_kind, it.buy_now, it.buy_now_excerpt, it.buy_now_start,
-          it.buy_now_end, it.bid_count, it.condition, it.closes, it.location, it.excerpt, it.quote_start, it.quote_end, it.verified, it.page_sha256, it.fetched_at, it.reserve ?? null],
+          it.buy_now_end, it.bid_count, it.condition, it.closes, it.location, it.excerpt, it.quote_start, it.quote_end, it.verified, it.page_sha256, it.fetched_at, it.reserve ?? null, it.source_url ?? null],
       );
     await c.query(
       `UPDATE price_lookups SET status=$2, error=$3, searched=$4, found=$5, credits=$6, candidates=$7, queries=$8, blocked=$9, method=$10 WHERE id=$1`,

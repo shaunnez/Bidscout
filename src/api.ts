@@ -148,6 +148,8 @@ export interface TradeMeItem {
   verified: boolean;
   page_sha256: string;
   fetched_at: string;
+  /** The Trade Me results page the quote came from, for search cards; null when it came from the listing page itself. */
+  source_url: string | null;
 }
 
 export interface TradeMeLookup {
@@ -173,6 +175,8 @@ export interface TradeMeState {
   reason: string | null;
   used: number;
   dailyLimit: number;
+  /** Pasted listing links can be read (they need Firecrawl). */
+  pasteLinks: boolean;
   latest: TradeMeLookup | null;
 }
 
@@ -227,7 +231,7 @@ export interface SnapshotMeta {
 export type Citation =
   | { kind: "spec"; field: string; value: string; method: string; source: string; path: string; text: string; start: number; end: number; quote: string; verified: boolean; lotUrl?: string; snapshot: SnapshotMeta }
   | { kind: "field"; path: string; value: unknown; context: Record<string, unknown> | null; snapshot: SnapshotMeta }
-  | { kind: "external"; site: string; url: string; value: string; excerpt: string; start: number; end: number; fetchedAt: string; sha256: string; where: string }
+  | { kind: "external"; site: string; url: string; listingUrl?: string; value: string; excerpt: string; start: number; end: number; fetchedAt: string; sha256: string; where: string }
   | { kind: "photo"; field: string; value: string; quote: string; confidence: number; boxes: Array<[number, number, number, number]>; width: number | null; height: number | null; image: string; imageUrl: string; sha256: string; ocr: string; readAt: string; lotUrl: string | null };
 
 export interface ScanRun {

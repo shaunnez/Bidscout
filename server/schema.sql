@@ -447,3 +447,5 @@ ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS blocked int;
 -- How a lookup found its listings: Trade Me's own search (by Firecrawl or Chromium), a web search, or pasted links.
 ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS method text;
 ALTER TABLE price_lookup_items ADD COLUMN IF NOT EXISTS reserve text;
+-- The results page a search card's quote came from (url is the listing itself).
+ALTER TABLE price_lookup_items ADD COLUMN IF NOT EXISTS source_url text;
