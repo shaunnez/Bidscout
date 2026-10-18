@@ -23,7 +23,8 @@ export const NOT_BULK = `l.title !~* '\\m(pallets? (lot|of|load)|bulk|assorted|m
  */
 export const MODELISH = `(l.description ~ '(?=[A-Z0-9./-]*[0-9])(?=[A-Z0-9./-]*[A-Z])[A-Z0-9][A-Z0-9./-]{3,}[A-Z0-9]'
   OR l.title ~ '(?=[A-Z0-9./-]*[0-9])(?=[A-Z0-9./-]*[A-Z])[A-Z0-9][A-Z0-9./-]{3,}[A-Z0-9]'
-  OR l.description ~* '\\m(model|part\\s*(no|number)|p/n|pn|sku|mpn)\\M')`;
+  OR l.description ~* '\\m(model|part\\s*(no|number)|p/n|pn|sku|mpn)\\M'
+  OR l.title ~* '\\m(model|part\\s*(no|number)|p/n|pn|sku|mpn)\\M')`;
 const HAS = (source: string, days: string) => `EXISTS (SELECT 1 FROM price_lookup_lots k JOIN price_lookups pl ON pl.id = k.lookup_id
   WHERE k.lot_id = l.id AND pl.status = 'ok' AND pl.source = '${source}' AND pl.created_at > now() - make_interval(days => ${days}))`;
 
@@ -64,12 +65,14 @@ export async function lotsToPrice(db: Pick<Db, "query">, limit = BATCH, noModel:
  * whichever process runs the loop).
  */
 export async function autoProgress(db: Pick<Db, "query">) {
+  // Lots the worker found have no model number never get a new price, so don't wait for one.
+  const skipped = [...noModel];
   const r = await db.query(
     `SELECT count(*) AS open,
             -- Priced: a Trade Me answer, and for a product with a model number a new price too.
-            count(*) FILTER (WHERE ${HAS("trademe", "$1")} AND (l.is_it OR NOT ${MODELISH} OR ${HAS("newprice", "$2")})) AS priced
+            count(*) FILTER (WHERE ${HAS("trademe", "$1")} AND (l.is_it OR NOT ${MODELISH} OR l.id = ANY($3::int[]) OR ${HAS("newprice", "$2")})) AS priced
      FROM lots l WHERE l.status = 'open' AND (l.ends_at IS NULL OR l.ends_at > now()) AND ${NOT_BULK}`,
-    [CACHE_DAYS, NEW_CACHE_DAYS],
+    [CACHE_DAYS, NEW_CACHE_DAYS, skipped],
   );
   const s = await autoStatus(db);
   const running = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE origin='auto' AND status='running'`)).rows[0].n);

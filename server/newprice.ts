@@ -37,8 +37,9 @@ const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /** Where the product is named in the text: the model number if the search has one, else most of its words. */
 export function productMention(text: string, query: string): number {
-  // The longest word with digits (and letters, or 4+ digits): "7100123456" in "3M 7100123456", not "3M".
-  const model = query.split(/\s+/).filter((w) => /\d/.test(w) && (/[a-z]/i.test(w) || w.replace(/\D/g, "").length >= 4)).sort((a, b) => b.length - a.length)[0];
+  // The last word with digits (and letters, or 3+ digits): searches are "brand model", so the model is
+  // "7100123456" in "3M 7100123456" and "X100" in "WD-40 X100", not the brand.
+  const model = query.split(/\s+/).filter((w) => /\d/.test(w) && (/[a-z]/i.test(w) || w.replace(/\D/g, "").length >= 3)).pop();
   if (model) {
     const want = norm(model);
     // Compare without spaces or dashes ("SHI2000-22" = "SHI 2000 22"), mapping back to the text.

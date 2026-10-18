@@ -41,3 +41,8 @@ test("shop prices: RRP, list and ex-GST prices aren't the shop's price; the mode
   const c = shopPrice({ url: "https://shop.co.nz/p", title: "Call 021 234 5678 for SHI2000-22", excerpts: ["SHI2000-22 $949"] }, "EPEVER SHI2000-22");
   assert.ok(c && !c.title!.includes("234 5678"), "contact details removed from the title");
 });
+
+test("the model a shop must name is the last model-like word of the search, not the brand", () => {
+  assert.equal(productMention("WD-40 multi-use spray $12", "WD-40 X100"), -1);
+  assert.equal(productMention("WD-40 X100 applicator $12", "WD-40 X100"), 6);
+});

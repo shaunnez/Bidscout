@@ -484,6 +484,8 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [ranHere, setRanHere] = useState(0);
+  // Every press now searches (Look again is fresh), so it needs one of the day's lookups left.
+  const canRun = state.available && state.used + ranHere < state.dailyLimit;
   const [links, setLinks] = useState("");
   const pasted = links.match(/https?:\/\/\S*trademe\.co\.nz\/\S*\/listing\/\d+\S*/gi) ?? [];
   // The lot on screen: a lookup that finishes after the drawer moved to another lot is dropped.
@@ -551,7 +553,7 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
   return (
     <div className="tm">
       <div className="tm-head">
-        <button className="primary small-btn" onClick={() => run()} disabled={busy || !query || (!state.available && !res)}>
+        <button className="primary small-btn" onClick={() => run()} disabled={busy || !query || !canRun}>
           {busy ? "Reading Trade Me…" : res ? "Look again" : "Trade Me prices"}
         </button>
         <span className="muted small">{state.available ? `${state.used + ranHere} of ${state.dailyLimit} lookups used today · answers kept 7 days; Look again searches fresh` : state.reason}</span>
