@@ -189,13 +189,13 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
   const id = Number(req.params.id);
   const r = await db.query(
     `SELECT ${LOT_COLUMNS}, l.description, l.images, l.bid_history, l.current_revision_id, l.machine_key, l.loose_key,
-            l.detail_read_at, l.outcome_snapshot_id, l.outcome_path, a.url AS auction_url, a.city AS auction_city
+            l.detail_read_at, l.outcome_snapshot_id, l.outcome_path, l.score_key, a.url AS auction_url, a.city AS auction_city
      FROM lots l ${LOT_JOINS} WHERE l.id=$2`,
     [uid(req), id],
   );
   const lot = r.rows[0];
   if (!lot) return reply.code(404).send({ error: "No such lot" });
-  const [specs, obs, terms, revs, watchers, friendBids] = await Promise.all([
+  const [specs, obs, terms, revs, watchers, friendBids, photoValues] = await Promise.all([
     db.query(
       `SELECT id, field, value, num, source, start_offset, end_offset, quote, method FROM spec_values
        WHERE lot_revision_id=$1 AND parser_version=$2 ORDER BY id`,
@@ -217,9 +217,15 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
        JOIN users u ON u.id=fb.user_id WHERE fb.lot_id=$1 ORDER BY COALESCE(fb.bid_at, fb.seen_at) DESC LIMIT 30`,
       [id],
     ),
+    db.query(
+      `SELECT pv.id, pv.field, pv.value, pv.quote, pv.confidence, pr.image_url FROM photo_values pv
+       JOIN photo_reads pr ON pr.id = pv.photo_read_id WHERE pv.lot_id=$1 ORDER BY pv.confidence DESC`,
+      [id],
+    ),
   ]);
   const suffix = lot.major_fault ? "|fault" : "";
-  const compKey = lot.comp_kind === "similar" ? lot.loose_key : lot.machine_key;
+  const compKey = lot.comp_kind === "similar" ? lot.loose_key : lot.comp_kind === "spec" ? lot.score_key : lot.machine_key;
+  const compCol = lot.comp_kind === "similar" ? "l.loose_key" : lot.comp_kind === "spec" ? "l.score_key" : "l.machine_key";
   const comps = compKey
     ? await db.query(
         `SELECT l.id, l.title, l.final_bid, l.closed_at, l.buyer_premium, l.faults, l.ram_gb, l.storage_gb, l.cpu, l.item_url,
@@ -227,14 +233,14 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
                 l.final_bid * (1 + COALESCE(l.buyer_premium,0)/100.0) * 1.15 AS all_in
          FROM lots l JOIN auctions a ON a.id=l.auction_id
          WHERE l.status='closed' AND l.final_bid > 0 AND l.id <> $1
-           AND ${lot.comp_kind === "similar" ? "l.loose_key" : "l.machine_key"} = $2 AND l.major_fault = $3
+           AND ${compCol} = $2 AND l.major_fault = $3
          ORDER BY l.closed_at DESC NULLS LAST LIMIT 20`,
         [id, compKey, !!suffix],
       )
     : { rows: [] };
   return {
     lot, specs: specs.rows, observations: obs.rows, terms: terms.rows[0] ?? null, revisions: revs.rows, comps: comps.rows,
-    watchers: watchers.rows, friendBids: friendBids.rows,
+    watchers: watchers.rows, friendBids: friendBids.rows, photoValues: photoValues.rows,
   };
 });
 
@@ -266,6 +272,30 @@ app.get<{ Params: { id: string } }>("/api/cite/:id", async (req, reply) => {
     lotUrl: v.item_url,
     snapshot: snapshotMeta(meta),
   };
+});
+
+/** A spec value read from a lot photo: the stored photo, the OCR words it came from, and their boxes. */
+app.get<{ Params: { id: string } }>("/api/photo-values/:id", async (req, reply) => {
+  const r = await db.query(
+    `SELECT pv.*, pr.id AS read_id, pr.image_url, pr.image_sha256, pr.width, pr.height, pr.ocr_version, pr.created_at AS read_at, l.item_url
+     FROM photo_values pv JOIN photo_reads pr ON pr.id = pv.photo_read_id JOIN lots l ON l.id = pv.lot_id WHERE pv.id=$1`,
+    [Number(req.params.id)],
+  );
+  const v = r.rows[0];
+  if (!v) return reply.code(404).send({ error: "No such photo value" });
+  return {
+    kind: "photo", field: v.field, value: v.value, quote: v.quote, confidence: Number(v.confidence), boxes: v.boxes,
+    width: v.width, height: v.height, image: `/api/photos/${v.read_id}/image`, imageUrl: v.image_url, sha256: v.image_sha256,
+    ocr: v.ocr_version, readAt: v.read_at, lotUrl: v.item_url,
+  };
+});
+
+/** The stored copy of a lot photo (re-hashed on read). */
+app.get<{ Params: { id: string } }>("/api/photos/:id/image", async (req, reply) => {
+  const r = await db.query(`SELECT image_sha256, content_type FROM photo_reads WHERE id=$1`, [Number(req.params.id)]);
+  if (!r.rows[0]) return reply.code(404).send({ error: "No such photo" });
+  reply.header("Cache-Control", "private, max-age=86400").type(r.rows[0].content_type);
+  return store.get(r.rows[0].image_sha256);
 });
 
 /** A raw field from a stored response (a bid, a close time, a final bid). */

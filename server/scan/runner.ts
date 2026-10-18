@@ -5,12 +5,15 @@ import { parseTerms } from "../../shared/terms.ts";
 import { tx, type Db, type Tx } from "../db.ts";
 import { isoToDate, n8, num, type N8AuctionsPage, type N8ItemData, type N8Lot, type N8LotsPage } from "../number8.ts";
 import { friendBids, friendHighBidder, loadFriendIds, recordFriendBids, recordFriendHigh, type FriendIds } from "../friends.ts";
+import { ImageFetcher } from "../images.ts";
+import { ocrAvailable } from "../ocr.ts";
 import { getScanSettings } from "../settings.ts";
 import { saveSnapshot } from "../snapshots.ts";
 import type { ObjectStore } from "../store.ts";
 import { HttpError, StopRunError, type Transport } from "../transport.ts";
 import { rebuildCompStats } from "./comps.ts";
 import { ingestLot, upsertAuction } from "./ingest.ts";
+import { lotsNeedingPhotos, readLotPhotos } from "./photos.ts";
 
 export type RunKind = "live" | "history";
 
@@ -19,6 +22,8 @@ export interface RunOptions {
   lookbackDays?: number;
   /** Live: most lot detail pages to read in one run. */
   maxDetails?: number;
+  /** Live: most computer lots to read photos for in one run (specs missing from the listing). */
+  maxPhotoLots?: number;
   /** History: stop after this many past-sales pages (resume later). */
   maxPages?: number;
   category?: string;
@@ -28,7 +33,7 @@ export interface RunOptions {
 }
 
 interface LiveCursor {
-  stage: "auctions" | "lots" | "details" | "finish";
+  stage: "auctions" | "lots" | "details" | "photos" | "finish";
   auctionPage: number;
   queue: number[];
   idx: number;
@@ -104,7 +109,7 @@ export async function claimRun(db: Db, owner: string): Promise<RunRow | null> {
 
 type Counters = Partial<Record<
   "requests" | "retries" | "throttles" | "pages_read" | "auctions_seen" | "auctions_queued" | "auctions_listed" |
-  "lots_seen" | "lots_new" | "lots_changed" | "observations" | "lots_closed" | "details_read" | "specs_parsed" | "errors",
+  "lots_seen" | "lots_new" | "lots_changed" | "observations" | "lots_closed" | "details_read" | "specs_parsed" | "errors" | "photos_read",
   number
 >>;
 
@@ -117,6 +122,7 @@ interface Ctx {
   now: () => Date;
   log: (msg: string) => void;
   friends: FriendIds;
+  images: ImageFetcher;
 }
 
 /** Ingests a page of lot rows; also notes when someone in the group is the high bidder. */
@@ -232,12 +238,30 @@ async function liveStep(ctx: Ctx, cur: LiveCursor): Promise<boolean> {
       const more = room === 0 && (await db.query(`SELECT 1 FROM lots WHERE needs_detail AND status='open' LIMIT 1`)).rowCount;
       await tx(db, async (c) => {
         await fence(c, ctx);
-        cur.stage = "finish";
-        await progress(c, ctx, {}, { cursor: cur, phase: "finish", ...(more ? { stop_reason: `Read the first ${max} lot pages; the rest wait for the next scan` } : {}) });
+        cur.stage = "photos";
+        await progress(c, ctx, {}, { cursor: cur, phase: "photos", ...(more ? { stop_reason: `Read the first ${max} lot pages; the rest wait for the next scan` } : {}) });
       });
       return true;
     }
     await Promise.all(next.rows.map((lot) => readDetail(ctx, lot, cur)));
+    return true;
+  }
+
+  if (cur.stage === "photos") {
+    // Computer lots whose listing leaves out the CPU, RAM or storage: read their photos.
+    const ids = (await ocrAvailable()) ? await lotsNeedingPhotos(db, run.options.maxPhotoLots ?? 40) : [];
+    for (const id of ids) {
+      const read = await readLotPhotos(db, store, ctx.images, id, 3, ctx.now());
+      await tx(db, async (c) => {
+        await fence(c, ctx);
+        await progress(c, ctx, { photos_read: read }, {});
+      });
+    }
+    await tx(db, async (c) => {
+      await fence(c, ctx);
+      cur.stage = "finish";
+      await progress(c, ctx, {}, { cursor: cur, phase: "finish" }, ids.length ? `Read photos of ${ids.length} computer lots for missing specs` : undefined);
+    });
     return true;
   }
 
@@ -408,6 +432,7 @@ export interface WorkerDeps {
   db: Db;
   store: ObjectStore;
   makeTransport: (signal: AbortSignal, concurrency: number) => Transport;
+  makeImageFetcher?: () => ImageFetcher;
   owner?: string;
   now?: () => Date;
   log?: (msg: string) => void;
@@ -422,7 +447,8 @@ export async function workOneRun(deps: WorkerDeps): Promise<boolean> {
   const settings = await getScanSettings(deps.db);
   const transport = deps.makeTransport(abort.signal, settings.concurrency);
   const friends = await loadFriendIds(deps.db);
-  const ctx: Ctx = { db: deps.db, store: deps.store, transport, owner, run, now: deps.now ?? (() => new Date()), log: deps.log ?? (() => {}), friends };
+  const images = deps.makeImageFetcher?.() ?? new ImageFetcher();
+  const ctx: Ctx = { db: deps.db, store: deps.store, transport, owner, run, now: deps.now ?? (() => new Date()), log: deps.log ?? (() => {}), friends, images };
   const beat = setInterval(async () => {
     try {
       const r = await deps.db.query(

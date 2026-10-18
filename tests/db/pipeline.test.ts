@@ -63,11 +63,10 @@ function site() {
         ] });
       if (p === "/api/getitems" && form.item_type === "itemlist") return respond(lots());
       if (p === "/api/getitems" && form.item_type === "pastsales")
-        return respond({ total: 1, page: 1, total_pages: 1, items: [
-          { id: "400", auction_id: "80", auction_title: "Closed - Earlier IT Sale", lot_number: "0007", title: "Lenovo ThinkPad T14 Gen 2 - Laptop",
+        return respond({ total: 3, page: 1, total_pages: 1, items: [300, 320, 340].map((bid, k) => (
+          { id: String(400 + k), auction_id: "80", auction_title: "Closed - Earlier IT Sale", lot_number: `000${7 + k}`, title: "Lenovo ThinkPad T14 Gen 2 - Laptop",
             description: "Type &#8211; Laptop Make &#8211; Lenovo Model &#8211; ThinkPad T14 Gen 2 Specs &#8211; Intel Core i5 1145G7,16GB,256GB SSD ,14 inch Faults &#8211; ITAD Comments &#8211; -",
-            category_name: "IT & Equipment", buyer_premium: "15.000", current_bid: "300.00", bid_count: "21", ends: unix(inDays(-30)) },
-        ] });
+            category_name: "IT & Equipment", buyer_premium: "15.000", current_bid: `${bid}.00`, bid_count: "21", ends: unix(inDays(-30 + k)) })) });
       if (p === "/api/ItemData")
         return respond({ id: String(form.item_id), auction_id: "90",
           images: [{ image_url: "https://cdn.test/a.jpg" }, { image_url: "https://cdn.test/b.jpg" }],
@@ -124,8 +123,19 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   assert.equal(past.final_bid, 300);
   assert.equal(past.machine_key, lot.machine_key, "same machine, same key");
   const stats = (await db.query(`SELECT n, p50 FROM comp_stats WHERE key=$1`, [lot.machine_key])).rows[0];
-  assert.equal(stats.n, 1);
-  assert.equal(Math.round(stats.p50 * 100), Math.round(300 * 1.15 * 1.15 * 100));
+  assert.equal(stats.n, 3);
+  assert.equal(Math.round(stats.p50 * 100), Math.round(320 * 1.15 * 1.15 * 100));
+
+  // Expected final and value index come back from search, never below the all-in now.
+  const { searchLots, parseQuery } = await import("../../server/search.ts");
+  const found = (await searchLots(db, parseQuery({ status: "live", sort: "value" }), alex)).items.find((x) => x.id === 501);
+  assert.equal(found.comp_kind, "machine");
+  assert.equal(Math.round(found.expected_mid), Math.round(320 * 1.3225));
+  // The range is the comps' p25–p75 (all-in 396.75, 423.20, 449.65).
+  assert.equal(Math.round(found.expected_low), Math.round(310 * 1.3225));
+  assert.equal(Math.round(found.expected_high), Math.round(330 * 1.3225));
+  assert.ok(found.spec_score > 0);
+  assert.ok(found.expected_low <= found.expected_mid && found.expected_mid <= found.expected_high);
 
   const terms = (await db.query(`SELECT premium_rate, gst_rate, premium_quote FROM auction_terms WHERE auction_id=90`)).rows[0];
   assert.equal(terms.premium_rate, 15);
@@ -154,7 +164,7 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   await startRun(db, "live");
   await workOneRun(deps);
   const revs = (await db.query(`SELECT lot_id, count(*)::int AS n FROM lot_revisions GROUP BY lot_id ORDER BY lot_id`)).rows;
-  assert.deepEqual(revs, [{ lot_id: 400, n: 1 }, { lot_id: 501, n: 1 }, { lot_id: 502, n: 2 }]);
+  assert.deepEqual(revs, [{ lot_id: 400, n: 1 }, { lot_id: 401, n: 1 }, { lot_id: 402, n: 1 }, { lot_id: 501, n: 1 }, { lot_id: 502, n: 2 }]);
   const obs = (await db.query(`SELECT current_bid FROM lot_observations WHERE lot_id=501 ORDER BY id`)).rows.map((r) => r.current_bid);
   assert.deepEqual(obs, [10, 45]);
   assert.equal((await db.query(`SELECT ram_gb FROM lots WHERE id=502`)).rows[0].ram_gb, 16);
@@ -180,6 +190,36 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   assert.deepEqual(await snapshotOf(), before);
   assert.equal((await db.query(`SELECT count(*)::int AS n FROM lot_observations`)).rows[0].n, obsBefore);
   assert.equal(transport.stats.requests, requestsBefore, "replay makes no requests");
+
+  // Photos fill specs the listing left out, with the words they came from; the listing's own values stay.
+  await db.query(`UPDATE lots SET ram_gb=NULL, storage_gb=NULL, images='["https://cdn.test/p1.jpg"]', photo_ocr_at=NULL, status='open' WHERE id=502`);
+  const { readLotPhotos, lotsNeedingPhotos } = await import("../../server/scan/photos.ts");
+  assert.ok((await lotsNeedingPhotos(db, 10)).includes(502));
+  const fakeImages = { get: async (u: string) => ({ body: Buffer.from(`photo of ${u}`), contentType: "image/jpeg" }) };
+  const line = "Memory Size 32768 MB Storage 1TB SSD";
+  let pos = 0;
+  const words = line.split(" ").map((t) => {
+    const w = { text: t, conf: 88, left: pos * 4, top: 10, width: t.length * 4, height: 10, start: pos, end: pos + t.length };
+    pos += t.length + 1;
+    return w;
+  });
+  const read = await readLotPhotos(db, store, fakeImages, 502, 3, clock, async () => ({ text: line, words, width: 400, height: 300 }));
+  assert.equal(read, 1);
+  const lp = (await db.query(`SELECT ram_gb, storage_gb, storage_type, photo_fields, photo_ocr_at FROM lots WHERE id=502`)).rows[0];
+  assert.equal(lp.ram_gb, 32);
+  assert.equal(lp.storage_gb, 1000);
+  assert.deepEqual(lp.photo_fields.sort(), ["ramGb", "storage"]);
+  assert.ok(lp.photo_ocr_at);
+  const pv = (await db.query(`SELECT field, quote, boxes FROM photo_values WHERE lot_id=502 ORDER BY field`)).rows;
+  assert.deepEqual(pv.map((r) => [r.field, r.quote]), [["ramGb", "Memory Size 32768 MB"], ["storage", "1TB SSD"]]);
+  assert.ok(pv[0].boxes.length >= 3);
+  assert.ok(!(await lotsNeedingPhotos(db, 10)).includes(502), "read once");
+  await assert.rejects(db.query(`UPDATE photo_values SET quote='x'`), /immutable/);
+  // A replay keeps what was read from photos and doesn't queue the lot again.
+  await replayAll(db, store);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM photo_values WHERE lot_id=502`)).rows[0].n, 2);
+  assert.ok((await db.query(`SELECT photo_ocr_at FROM lots WHERE id=502`)).rows[0].photo_ocr_at);
+  assert.ok(!(await lotsNeedingPhotos(db, 10)).includes(502));
 
   // Evidence rows cannot be edited.
   await assert.rejects(db.query(`UPDATE spec_values SET quote='x'`), /immutable/);

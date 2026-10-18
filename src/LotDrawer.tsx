@@ -84,6 +84,7 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
               </div>
             )}
             <h2 className="lot-title">{l.title}</h2>
+            {l.photo_fields.length > 0 && <p className="small muted">{l.photo_fields.map((f) => FIELD_LABEL[f] ?? f).join(", ")} read from the photos (see below).</p>}
             <div className="chips">
               {specChips(l).map((c) => <span key={c} className="chip">{c}</span>)}
               {l.faults.map((f) => <span key={f} className={`fault ${MAJOR.has(f) ? "major" : ""}`}>{FAULT_LABEL[f] ?? f}</span>)}
@@ -120,6 +121,34 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
               <DealBadge lot={l} />
               {l.item_url && <a className="primary" href={l.item_url} target="_blank" rel="noreferrer">{l.status === "closed" ? "View on number8.bid" : "Bid on number8.bid"} ↗</a>}
             </section>
+
+            {(l.expected_mid !== null || l.spec_score !== null) && (
+              <section className="likely">
+                <h3>What it's likely to cost</h3>
+                {l.expected_mid !== null ? (
+                  <p>
+                    Expected final <b>{money(l.expected_low)}–{money(l.expected_high)}</b> all-in (middle {money(l.expected_mid)}), from {l.comp_n} past
+                    sale{l.comp_n === 1 ? "" : "s"} of {l.comp_kind === "machine" ? "the same machine" : l.comp_kind === "similar" ? "similar machines" : "machines with a similar spec score"}, listed below.
+                    {l.status === "open" && (l.all_in ?? 0) >= (l.expected_low ?? 0) ? " The current bid is already in that range." : ""}
+                  </p>
+                ) : l.status === "open" ? <p className="muted">Not enough past sales to estimate a final price yet.</p> : null}
+                {l.value_index !== null && l.comp_kind !== "spec" && (
+                  <p>
+                    <b>Value {l.value_index}</b>: machines with this spec score typically close at {money(l.spec_p50)} ({l.spec_n} sales).
+                    {l.value_index >= 115 ? " This one is expected to cost less than typical for what it is." : l.value_index <= 85 ? " This one usually sells for more than typical for its spec." : " About typical for its spec."}
+                  </p>
+                )}
+                {l.spec_score !== null && l.score_parts && (
+                  <details>
+                    <summary>Spec score {l.spec_score}{l.score_incomplete ? " (RAM or storage not stated)" : ""}</summary>
+                    <ul className="score-parts">
+                      {l.score_parts.map((p, i) => <li key={i}><span>{p.label}</span><b>{p.points ? `+${p.points}` : ""}</b></li>)}
+                    </ul>
+                    <p className="small muted">BidScout's own measure from the cited specs (CPU tier and age, RAM, storage, faults). Not a benchmark.</p>
+                  </details>
+                )}
+              </section>
+            )}
 
             <section className="social-box">
               <div className="social-head">
@@ -163,13 +192,35 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
               </section>
             )}
 
+            {d.photoValues.length > 0 && (
+              <section>
+                <h3>Read from photos <small className="muted">text found on stickers or screens in the photos</small></h3>
+                <table className="specs">
+                  <tbody>
+                    {d.photoValues.map((v) => (
+                      <tr key={v.id}>
+                        <th>{FIELD_LABEL[v.field] ?? v.field}{l.photo_fields.includes(v.field) && <span className="from-photo">used</span>}</th>
+                        <td>
+                          <button className="cite" onClick={() => setCite({ title: `${FIELD_LABEL[v.field] ?? v.field} (photo)`, load: () => api.photoValue(v.id) })}>
+                            {v.value}
+                            <span className="q">“{v.quote}” · {Math.round(v.confidence)}% confident</span>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="footnote">Read by OCR. A photo value is only used when the listing doesn't state that spec and the text is at least 60% confident.</p>
+              </section>
+            )}
+
             <section>
-              <h3>Past sales of this machine</h3>
+              <h3>{l.comp_kind === "spec" ? "Past sales with a similar spec" : l.comp_kind === "similar" ? "Past sales of similar machines" : l.is_it ? "Past sales of this machine" : "Past sales"}</h3>
               {d.comps.length === 0 ? (
                 <p className="muted">No closed number8 lots with the same {l.is_it ? "machine or similar spec" : "title"} yet. Reading past sales on the Scans page builds this up.</p>
               ) : (
                 <>
-                  <p className="muted small">{l.comp_kind === "similar" ? "Similar spec (same type, CPU family and generation, RAM band and drive type)" : "Same make, model, CPU, RAM and storage"}{l.major_fault ? ", also with a major fault" : ", without major faults"}. All-in uses each sale's premium and 15% GST.</p>
+                  <p className="muted small">{l.comp_kind === "similar" ? "Similar machines (same type, CPU family and generation, RAM band and drive type)" : l.comp_kind === "spec" ? "Similar spec score (same form factor, within half a point)" : "Same make, model, CPU, RAM and storage"}{l.major_fault ? ", also with a major fault" : ", without major faults"}. All-in uses each sale's premium and 15% GST.</p>
                   <table className="comps">
                     <thead><tr><th>Closed</th><th>Lot</th><th className="r">Final bid</th><th className="r">All-in</th></tr></thead>
                     <tbody>
@@ -282,6 +333,24 @@ function SourcePanel({ request, onClose }: { request: CiteRequest; onClose: () =
             <p className="small muted">Field <code>{c.path}</code> of the stored response, as cleaned text (HTML removed).</p>
           </>
         )}
+        {c?.kind === "photo" && (
+          <>
+            <p className="verdict ok">Text read from this photo by OCR · {Math.round(c.confidence)}% confident</p>
+            <p className="small muted">{c.value} · found as “{c.quote}”</p>
+            <div className="photo-cite">
+              <img src={c.image} alt="Lot photo" />
+              {c.width && c.height && c.boxes.map(([x, y, w, h], i) => (
+                <span key={i} className="box" ref={i === 0 ? (mark as React.RefObject<HTMLSpanElement>) : undefined}
+                  style={{ left: `${(x / c.width!) * 100}%`, top: `${(y / c.height!) * 100}%`, width: `${(w / c.width!) * 100}%`, height: `${(h / c.height!) * 100}%` }} />
+              ))}
+            </div>
+            <dl className="meta-list">
+              <dt>Photo</dt><dd><a href={c.imageUrl} target="_blank" rel="noreferrer">Original on number8.bid ↗</a></dd>
+              <dt>Read</dt><dd>{nzDate(c.readAt)} · <code>{c.ocr}</code></dd>
+              <dt>Stored copy</dt><dd><code>sha256 {c.sha256.slice(0, 16)}…</code></dd>
+            </dl>
+          </>
+        )}
         {c?.kind === "field" && (
           <>
             <p className="verdict ok">Value as published in the stored response</p>
@@ -291,7 +360,7 @@ function SourcePanel({ request, onClose }: { request: CiteRequest; onClose: () =
             </div>
           </>
         )}
-        {c && (
+        {c && c.kind !== "photo" && (
           <dl className="meta-list">
             <dt>Fetched</dt><dd>{nzDate(c.snapshot.fetchedAt)}</dd>
             <dt>Request</dt><dd><code>{c.snapshot.method} {c.snapshot.url.replace("https://www.number8.bid", "")}</code>{c.snapshot.request && <div><code className="wrap">{decodeURIComponent(c.snapshot.request)}</code></div>}</dd>

@@ -33,6 +33,23 @@ for (const t of terms.rows) {
     }
   }
 }
-console.log(`${rows.rows.length + terms.rows.length * 2} citations checked, ${bad} failed.`);
+// Photo values: the stored photo still matches its hash, and the quote is in the text read from it.
+const photos = await db.query(
+  `SELECT v.id, v.field, v.quote, r.text, r.image_sha256 FROM photo_values v JOIN photo_reads r ON r.id = v.photo_read_id ORDER BY v.id`,
+);
+for (const p of photos.rows) {
+  let problem = "";
+  try {
+    store.get(p.image_sha256);
+  } catch (e) {
+    problem = `photo unreadable (${(e as Error).message})`;
+  }
+  if (!problem && !p.text.includes(p.quote)) problem = `“${p.quote}” not in the photo's text`;
+  if (problem) {
+    bad++;
+    console.log(`✕ photo value ${p.id} (${p.field}): ${problem}`);
+  }
+}
+console.log(`${rows.rows.length + terms.rows.length * 2 + photos.rows.length} citations checked, ${bad} failed.`);
 await db.end();
 process.exit(bad ? 1 : 0);

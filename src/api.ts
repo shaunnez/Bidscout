@@ -42,7 +42,17 @@ export interface Lot {
   comp_p25: number | null;
   comp_p50: number | null;
   comp_p75: number | null;
-  comp_kind: "machine" | "similar" | null;
+  comp_kind: "machine" | "similar" | "spec" | null;
+  expected_low: number | null;
+  expected_mid: number | null;
+  expected_high: number | null;
+  spec_score: number | null;
+  score_parts: Array<{ label: string; points: number }> | null;
+  score_incomplete: boolean;
+  photo_fields: string[];
+  value_index: number | null;
+  spec_n: number | null;
+  spec_p50: number | null;
   watched: boolean;
   max_all_in: number | null;
   watcher_count: number;
@@ -89,6 +99,7 @@ export interface LotDetail {
   terms: { premium_rate: number | null; gst_rate: number | null; payment_due: string | null } | null;
   revisions: Array<{ id: number; created_at: string }>;
   watchers: Array<{ id: number; display_name: string; added_at: string }>;
+  photoValues: Array<{ id: number; field: string; value: string; quote: string; confidence: number; image_url: string }>;
   friendBids: Array<{ user_id: number; display_name: string; kind: "high_bidder" | "bid"; amount: number | null; bid_at: string | null; seen_at: string }>;
   comps: Array<{ id: number; title: string; final_bid: number; all_in: number; closed_at: string; faults: string[]; auction_title: string; item_url: string | null; outcome_snapshot_id: number; outcome_path: string }>;
 }
@@ -106,7 +117,8 @@ export interface SnapshotMeta {
 
 export type Citation =
   | { kind: "spec"; field: string; value: string; method: string; source: string; path: string; text: string; start: number; end: number; quote: string; verified: boolean; lotUrl?: string; snapshot: SnapshotMeta }
-  | { kind: "field"; path: string; value: unknown; context: Record<string, unknown> | null; snapshot: SnapshotMeta };
+  | { kind: "field"; path: string; value: unknown; context: Record<string, unknown> | null; snapshot: SnapshotMeta }
+  | { kind: "photo"; field: string; value: string; quote: string; confidence: number; boxes: Array<[number, number, number, number]>; width: number | null; height: number | null; image: string; imageUrl: string; sha256: string; ocr: string; readAt: string; lotUrl: string | null };
 
 export interface ScanRun {
   id: number;
@@ -176,6 +188,7 @@ export const api = {
   cancelScan: (id: number) => call(`/api/scans/${id}/cancel`, { method: "POST", body: "{}" }),
   watch: (id: number, maxAllIn: number | null = null) => call(`/api/favourites/${id}`, { method: "PUT", body: JSON.stringify({ maxAllIn }) }),
   unwatch: (id: number) => call(`/api/favourites/${id}`, { method: "DELETE" }),
+  photoValue: (id: number) => call<Citation>(`/api/photo-values/${id}`),
   refreshLot: (id: number) => call<{ ok: true }>(`/api/lots/${id}/refresh`, { method: "POST", body: "{}" }),
 };
 

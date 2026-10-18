@@ -17,7 +17,7 @@ export interface SearchQuery {
   closingHours?: number;
   auction?: number;
   watch?: boolean;
-  sort?: "closing" | "newest" | "price" | "deal" | "bids" | "ended";
+  sort?: "closing" | "newest" | "price" | "deal" | "bids" | "ended" | "value" | "expected" | "score";
   page?: number;
   perPage?: number;
 }
@@ -44,7 +44,7 @@ export function parseQuery(q: Record<string, unknown>): SearchQuery {
     closingHours: number(q.closingHours),
     auction: number(q.auction),
     watch: q.watch === "1",
-    sort: (["closing", "newest", "price", "deal", "bids", "ended"] as const).find((s) => s === q.sort),
+    sort: (["closing", "newest", "price", "deal", "bids", "ended", "value", "expected", "score"] as const).find((s) => s === q.sort),
     page: Math.max(1, number(q.page) ?? 1),
     perPage: Math.min(100, Math.max(10, number(q.perPage) ?? 40)),
   };
@@ -66,12 +66,26 @@ export const LOT_JOINS = `
   LEFT JOIN LATERAL (SELECT premium_rate, gst_rate FROM auction_terms WHERE auction_id = l.auction_id ORDER BY id DESC LIMIT 1) t ON true
   LEFT JOIN comp_stats cm ON cm.key = l.machine_key || ${FAULT_SUFFIX}
   LEFT JOIN comp_stats cl ON cl.key = l.loose_key || ${FAULT_SUFFIX}
+  LEFT JOIN comp_stats cs ON cs.key = l.score_key
   LEFT JOIN favourites w ON w.lot_id = l.id AND w.user_id = $1
   LEFT JOIN users fh ON fh.id = l.friend_high_user_id`;
 
-/** The comparable set used: exact machine when it has 3+ sales, else similar machines, else whatever exists. */
+/**
+ * The comparable set used: the same machine when it has 3+ sales, else similar machines,
+ * else similar spec score, else whatever exists (in that order).
+ */
 const COMP = (f: string) =>
-  `CASE WHEN cm.n >= 3 THEN cm.${f} WHEN cl.n >= 3 THEN cl.${f} WHEN cm.n IS NOT NULL THEN cm.${f} ELSE cl.${f} END`;
+  `CASE WHEN cm.n >= 3 THEN cm.${f} WHEN cl.n >= 3 THEN cl.${f} WHEN cs.n >= 3 THEN cs.${f}
+        WHEN cm.n IS NOT NULL THEN cm.${f} WHEN cl.n IS NOT NULL THEN cl.${f} ELSE cs.${f} END`;
+const COMP_KIND = `CASE WHEN cm.n >= 3 THEN 'machine' WHEN cl.n >= 3 THEN 'similar' WHEN cs.n >= 3 THEN 'spec'
+  WHEN cm.n IS NOT NULL THEN 'machine' WHEN cl.n IS NOT NULL THEN 'similar' WHEN cs.n IS NOT NULL THEN 'spec' END`;
+/**
+ * Expected final (open lots, 3+ comparable sales): the comparables' all-in range, never below
+ * the all-in at the current bid. Value index: the typical final for machines with this spec
+ * score, as a percentage of this lot's expected final (over 100 = cheaper than typical).
+ */
+const EXPECTED = (f: "p25" | "p50" | "p75") =>
+  `CASE WHEN l.status='open' AND ${COMP("n")} >= 3 THEN GREATEST(${ALL_IN}, ${COMP(f)}) END`;
 
 export const LOT_COLUMNS = `
   l.id, l.auction_id, l.lot_number, l.title, l.category, l.quantity, l.item_url, l.thumb_url, l.city, l.ends_at,
@@ -82,7 +96,11 @@ export const LOT_COLUMNS = `
   (${PRICE}) AS price, ${ALL_IN} AS all_in, ${PREMIUM} AS premium_rate, ${GST} AS gst_rate,
   (t.gst_rate IS NULL) AS gst_assumed,
   ${COMP("n")} AS comp_n, ${COMP("p25")} AS comp_p25, ${COMP("p50")} AS comp_p50, ${COMP("p75")} AS comp_p75,
-  CASE WHEN cm.n >= 3 THEN 'machine' WHEN cl.n >= 3 THEN 'similar' WHEN cm.n IS NOT NULL THEN 'machine' WHEN cl.n IS NOT NULL THEN 'similar' END AS comp_kind,
+  ${COMP_KIND} AS comp_kind,
+  ${EXPECTED("p25")} AS expected_low, ${EXPECTED("p50")} AS expected_mid, ${EXPECTED("p75")} AS expected_high,
+  l.spec_score, l.score_parts, l.score_incomplete, l.photo_fields,
+  CASE WHEN cs.n >= 3 AND ${EXPECTED("p50")} > 0 THEN round(100 * cs.p50 / ${EXPECTED("p50")}) END AS value_index,
+  cs.n AS spec_n, cs.p50 AS spec_p50,
   (w.lot_id IS NOT NULL) AS watched, w.max_all_in,
   (SELECT count(*)::int FROM favourites f WHERE f.lot_id = l.id) AS watcher_count,
   fh.display_name AS friend_high_bidder,
@@ -125,6 +143,9 @@ const ORDER: Record<string, string> = {
   price: `all_in ASC NULLS LAST, l.id`,
   bids: `l.bid_count DESC NULLS LAST, l.id`,
   deal: `CASE WHEN comp_n >= 3 AND comp_p50 > 0 THEN (comp_p50 - all_in) / comp_p50 END DESC NULLS LAST, l.ends_at ASC`,
+  value: `value_index DESC NULLS LAST, spec_score DESC NULLS LAST, l.ends_at ASC`,
+  expected: `expected_mid ASC NULLS LAST, l.ends_at ASC`,
+  score: `spec_score DESC NULLS LAST, l.ends_at ASC`,
 };
 
 /** All search queries run in parallel; $1 is always the signed-in user (for favourites). */

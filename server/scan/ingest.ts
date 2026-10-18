@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import { cleanText } from "../../shared/clean.ts";
-import { PARSER_VERSION, parseComputer, titleKey } from "../../shared/specs/computer.ts";
+import { looseKey, machineKey, PARSER_VERSION, parseComputer, titleKey, type ComputerSummary } from "../../shared/specs/computer.ts";
+import { mergePhotoValues } from "../../shared/specs/photo.ts";
+import { specScore } from "../../shared/specs/score.ts";
 import type { Tx } from "../db.ts";
 import { isoToDate, num, unixToDate, type N8Auction, type N8Lot } from "../number8.ts";
 
@@ -57,6 +59,23 @@ async function ensureAuctionStub(c: Tx, row: N8Lot, snapshotId: number, path: st
   );
 }
 
+/**
+ * Copies a parse's facets onto the lot, plus the spec score. `photoFields` names facets that
+ * came from photo text rather than the listing (see server/scan/photos.ts).
+ */
+export async function applySummary(c: Tx, lotId: number, s: ComputerSummary, title: string, photoFields: string[] = []) {
+  const score = specScore(s);
+  await c.query(
+    `UPDATE lots SET parser_version=$2, device_type=$3, is_it=$4, make=$5, model=$6, cpu=$7, cpu_family=$8, cpu_gen=$9,
+       ram_gb=$10, storage_gb=$11, storage_type=$12, screen_in=$13, gpu=$14, os=$15, faults=$16, major_fault=$17,
+       machine_key=$18, loose_key=$19, spec_score=$20, score_key=$21, score_parts=$22, score_incomplete=$23, photo_fields=$24
+     WHERE id=$1`,
+    [lotId, PARSER_VERSION, s.deviceType, s.isIt, s.make, s.model, s.cpu, s.cpuFamily, s.cpuGen, s.ramGb, s.storageGb,
+      s.storageType, s.screenIn, s.gpu, s.os, s.faults, s.majorFault, s.machineKey ?? (s.isIt ? null : titleKey(title)), s.looseKey,
+      score?.score ?? null, score?.key ?? null, score ? JSON.stringify(score.parts) : null, score?.incomplete ?? false, photoFields],
+  );
+}
+
 /** Parses a revision and stores every value with its span, then copies the facets onto the lot. */
 export async function parseRevision(c: Tx, lotId: number, revisionId: number, fields: ReturnType<typeof semanticFields>) {
   const title = cleanText(fields.title);
@@ -75,14 +94,14 @@ export async function parseRevision(c: Tx, lotId: number, revisionId: number, fi
       cols,
     );
   }
-  const s = summary;
-  await c.query(
-    `UPDATE lots SET parser_version=$2, device_type=$3, is_it=$4, make=$5, model=$6, cpu=$7, cpu_family=$8, cpu_gen=$9,
-       ram_gb=$10, storage_gb=$11, storage_type=$12, screen_in=$13, gpu=$14, os=$15, faults=$16, major_fault=$17,
-       machine_key=$18, loose_key=$19 WHERE id=$1`,
-    [lotId, PARSER_VERSION, s.deviceType, s.isIt, s.make, s.model, s.cpu, s.cpuFamily, s.cpuGen, s.ramGb, s.storageGb,
-      s.storageType, s.screenIn, s.gpu, s.os, s.faults, s.majorFault, s.machineKey ?? (s.isIt ? null : titleKey(title)), s.looseKey],
-  );
+  // Specs read from photos fill gaps the listing leaves (server/scan/photos.ts); keep them on re-parse.
+  const photo = (await c.query(`SELECT field, value, num, confidence FROM photo_values WHERE lot_id=$1`, [lotId])).rows;
+  if (photo.length) {
+    const merged = mergePhotoValues(summary, photo);
+    merged.summary.machineKey = machineKey(merged.summary);
+    merged.summary.looseKey = looseKey(merged.summary);
+    await applySummary(c, lotId, merged.summary, title, merged.used);
+  } else await applySummary(c, lotId, summary, title);
   return values.length;
 }
 

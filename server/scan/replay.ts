@@ -9,8 +9,9 @@ import { recordDetail } from "./runner.ts";
 /**
  * Rebuilds every derived table (auctions, lots, revisions, observations, specs, terms,
  * price history) from the stored snapshots, in the order they were fetched.
- * Use after fixing how a field is read. No requests to number8.bid. Favourites and friends'
- * bids are kept (friends' bids can't be re-derived: stored responses have bidder IDs removed).
+ * Use after fixing how a field is read. No requests to number8.bid. Favourites, friends'
+ * bids (stored responses have bidder IDs removed) and photo reads (they come from images,
+ * not snapshots) are kept, and photo values are merged back in as each lot is rebuilt.
  */
 export async function replayAll(db: Db, store: ObjectStore, onProgress?: (done: number, total: number) => void) {
   const active = await db.query(`SELECT id FROM scan_runs WHERE state IN ('queued','running')`);
@@ -50,6 +51,9 @@ export async function replayAll(db: Db, store: ObjectStore, onProgress?: (done: 
        SELECT $1,$2,$3,$4,$5,$6,$7 WHERE EXISTS (SELECT 1 FROM lots WHERE id=$1) ON CONFLICT DO NOTHING`,
       [b.lot_id, b.user_id, b.kind, b.amount, b.bid_at, b.snapshot_id, b.seen_at],
     );
+  await db.query(
+    `UPDATE lots l SET photo_ocr_at = r.at FROM (SELECT lot_id, max(created_at) AS at FROM photo_reads GROUP BY lot_id) r WHERE r.lot_id = l.id`,
+  );
   await rebuildCompStats(db);
   return snaps.length;
 }

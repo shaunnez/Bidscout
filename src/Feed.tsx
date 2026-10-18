@@ -132,7 +132,7 @@ export function Feed({ page, params, setParams, openLot, summary, scanFinished }
             onChange={(v) => set("sort", v)}
             options={page === "history"
               ? [["ended", "Most recent"], ["price", "Lowest final"], ["bids", "Most bids"]]
-              : [["closing", "Closing soonest"], ["deal", "Best vs past sales"], ["price", "Lowest all-in"], ["bids", "Most bids"], ["newest", "Newest"]]}
+              : [["closing", "Closing soonest"], ["value", "Best value"], ["expected", "Lowest expected final"], ["score", "Highest spec score"], ["price", "Lowest all-in now"], ["bids", "Most bids"], ["newest", "Newest"]]}
           />
         </div>
         {error && <p className="err">{error}</p>}
@@ -199,7 +199,7 @@ function MaxPrice({ value, onChange }: { value: string | null; onChange: (v: str
   );
 }
 
-export function specChips(l: Pick<Lot, "device_type" | "cpu" | "ram_gb" | "storage_gb" | "storage_type" | "screen_in" | "gpu">) {
+export function specChips(l: Pick<Lot, "device_type" | "cpu" | "ram_gb" | "storage_gb" | "storage_type" | "screen_in" | "gpu" | "spec_score">) {
   const chips: string[] = [];
   if (l.device_type) chips.push(DEVICE_LABEL[l.device_type] ?? l.device_type);
   if (l.cpu) chips.push(l.cpu);
@@ -207,10 +207,31 @@ export function specChips(l: Pick<Lot, "device_type" | "cpu" | "ram_gb" | "stora
   if (l.storage_gb !== null && l.storage_gb !== undefined) chips.push(l.storage_gb === 0 ? "No drive" : `${gb(l.storage_gb)}${l.storage_type && l.storage_type !== "unknown" && l.storage_type !== "none" ? " " + (l.storage_type === "emmc" ? "flash" : l.storage_type.toUpperCase()) : ""}`);
   if (l.screen_in) chips.push(`${l.screen_in}″`);
   if (l.gpu) chips.push(l.gpu);
+  if (l.spec_score !== null && l.spec_score !== undefined) chips.push(`Score ${l.spec_score}`);
   return chips;
 }
 
+const KIND_LABEL = { machine: "same machine", similar: "similar machine", spec: "similar spec" } as const;
+
+/** Live lots: the expected final range and value index. Closed lots: how the final compared. */
 export function DealBadge({ lot }: { lot: Lot }) {
+  if (lot.status === "open" && lot.expected_mid !== null) {
+    const basis = `${lot.comp_n} closed number8 lots, ${lot.comp_kind ? KIND_LABEL[lot.comp_kind] : ""}; all-in final prices`;
+    return (
+      <>
+        <span className="deal neutral" title={`Expected final, all-in, from ${basis}. Never shown below the all-in at the current bid.`}>
+          <span className="nowrap">Expect {money(lot.expected_low)}–{money(lot.expected_high)}</span>
+          <small className="nowrap">{lot.comp_kind ? KIND_LABEL[lot.comp_kind] : ""} · {lot.comp_n}</small>
+        </span>
+        {lot.value_index !== null && lot.comp_kind !== "spec" && (
+          <span className={`deal ${lot.value_index >= 115 ? "good" : lot.value_index <= 85 ? "high" : "neutral"}`}
+            title={`Typical final for machines with this spec score: ${money(lot.spec_p50)} (${lot.spec_n} sales). This lot is expected around ${money(lot.expected_mid)}. Over 100 = cheaper than typical for the spec.`}>
+            Value {lot.value_index}
+          </span>
+        )}
+      </>
+    );
+  }
   if (!lot.comp_n || lot.comp_p50 === null) return null;
   const allIn = lot.all_in ?? 0;
   const live = lot.status === "open";

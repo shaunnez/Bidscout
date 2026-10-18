@@ -86,11 +86,11 @@ export interface ParseInput {
   category: string | null;
 }
 
-export const PARSER_VERSION = "specs-v2";
+export const PARSER_VERSION = "specs-v3";
 
 // ---------------------------------------------------------------- CPU
 
-interface CpuHit {
+export interface CpuHit {
   hit: Hit;
   cpu: string;
   family: string;
@@ -163,7 +163,7 @@ export function intelGen(num: string, suffix = ""): number | null {
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 
-function findCpu(segs: Seg[]): CpuHit | null {
+export function findCpu(segs: Seg[]): CpuHit | null {
   for (const s of segs) for (const p of CPU_PATTERNS) {
     const r = p(s);
     if (r) return r;

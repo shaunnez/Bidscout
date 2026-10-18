@@ -1,6 +1,7 @@
 import { loadConfig } from "./config.ts";
 import { connect, migrate } from "./db.ts";
 import { ObjectStore } from "./store.ts";
+import { ImageFetcher } from "./images.ts";
 import { Number8Transport } from "./transport.ts";
 
 export async function appContext() {
@@ -16,5 +17,7 @@ export async function appContext() {
   store.checkWritable();
   const makeTransport = (signal: AbortSignal, concurrency = 1) =>
     new Number8Transport({ baseUrl: config.baseUrl, contact: config.contact, minIntervalMs: config.minIntervalMs, concurrency, signal });
-  return { config, db, store, makeTransport };
+  const makeImageFetcher = () =>
+    new ImageFetcher({ userAgent: `BidScout/0.1 (lot photo reading${config.contact ? `; contact ${config.contact}` : ""})` });
+  return { config, db, store, makeTransport, makeImageFetcher };
 }
