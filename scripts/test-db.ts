@@ -13,7 +13,7 @@ const url = new URL(base.toString());
 url.pathname = `/${name}`;
 let code = 1;
 try {
-  const r = spawnSync("npx", ["tsx", "--test", "--test-concurrency=1", "tests/db/pipeline.test.ts"], {
+  const r = spawnSync("npx", ["tsx", "--test", "--test-concurrency=1", "tests/db/pipeline.test.ts", "tests/db/trademe.test.ts"], {
     stdio: "inherit",
     env: { ...process.env, BIDSCOUT_TEST_DATABASE_URL: url.toString() },
   });

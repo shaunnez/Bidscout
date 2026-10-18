@@ -12,7 +12,8 @@ Personal use, with permission from number 8 solutions (17 October 2026).
 - **Specs from photos:** for open computer lots missing a CPU model, RAM or storage, the first 3 photos are read with OCR (spec stickers, BIOS and "About" screens). A value found there fills only specs the listing didn't state, and opens the photo with the words boxed.
 - **Past sales:** closed lots with their final bids, the history the comparisons are built from.
 - **Auctions:** every live auction as a card: photos, pickup address, when the first and last lots close, fees, payment deadline, who is selling (the "Under instructions from …" line), lot and bid counts, how many lots are good value, and the group's favourites. Recently closed auctions show what sold and for how much. Opening one shows its lots with the auction's details at the top.
-- **Check prices elsewhere:** each lot has links that search Trade Me, eBay sold listings, PriceSpy and Google for the same machine (make, model and CPU; a clone's parts; or the tidied title). BidScout only opens these pages for you; it never fetches or stores them.
+- **Check prices elsewhere:** each lot has links that search Trade Me, eBay sold listings, PriceSpy and Google for the same machine (make, model and CPU; a clone's parts; or the tidied title). BidScout only opens these pages for you.
+- **Trade Me prices** (off until an admin turns it on, needs a Firecrawl key): a button on each lot that finds matching Trade Me listings and shows what they sold for or are asking, next to BidScout's own expected final. See below.
 - **Lot drawer:** photos, a price breakdown where each part opens its source (bid, premium wording, GST wording), a link to its auction (pickup address, closing times, fees), a details table where every value opens its quote, what it's likely to cost with the spec score broken down, values read from photos, past sales of the same machine, bid movement seen across scans, and the listing text.
 - **Favourites:** each person stars their own lots; a lot shows who else in the group has favourited it.
 - **Friends:** each person adds their own number8 username and bidder number in Profile. A lot then shows when a friend is the high bidder or has bid, so you don't bid against each other. **Refresh now** on a lot re-reads it from number8.bid (one request) right before you bid.
@@ -54,10 +55,22 @@ The repo has a `Dockerfile` and `railway.toml`. Shaun runs the deploy himself (`
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`: a reference to the Postgres service.
    - `BIDSCOUT_PASSWORD`: the password of the first admin, user `admin` (or `BIDSCOUT_ADMIN_USERNAME`), created on first start. After that, people and passwords are managed in Settings.
    - `BIDSCOUT_CONTACT`: the email sent to number 8 solutions in the User-Agent.
+   - `FIRECRAWL_API_KEY` (optional): turns on the Trade Me prices button once an admin enables it in Settings. `FIRECRAWL_API_URL` points at a self-hosted Firecrawl instead.
 4. Under the service's Networking settings, generate a public domain.
 5. Deploy: connect the repo so every push to `main` deploys, or run `railway up` from this folder. The health check is `/api/health`. The schema is applied at start.
 
 Keep `numReplicas = 1`: the worker runs inside the one instance, and only one scan may run at a time.
+
+## Trade Me prices (`server/trademe.ts`, `server/firecrawl.ts`, `server/robots.ts`)
+
+On demand only: one press of the button in a lot's drawer, by a signed-in person, when an admin has turned it on.
+
+1. **Find listings without Trade Me's search.** Trade Me's robots.txt disallows its search pages, so BidScout asks Firecrawl's web search for the lot's search text, limited to trademe.co.nz.
+2. **Read listing pages robots.txt allows.** Only marketplace listing URLs, reduced to their canonical form, and only after checking Trade Me's robots.txt (fetched directly, kept a day, read the RFC 9309 way: the longest matching rule wins). Up to 5 pages, one at a time, a second apart, through Firecrawl (its servers, and its cache of up to a day, so popular pages aren't fetched again).
+3. **Confirm, then keep only the quote.** Firecrawl's structured extraction reads the title, status (open, sold, closed), price and what kind of price it is, Buy Now, bids, condition, closing time and location. A price only counts when its text is found on the page; the words around it, with contact details removed, are kept as the citation, along with the page's SHA-256. The page itself is not stored, and seller names are never asked for.
+4. **Reuse and limit.** The same search text reuses the answer for 3 days. The group shares a daily limit (Settings: 10, 20 or 50; failed lookups count). A lookup costs about 7 Firecrawl credits.
+
+Trade Me's terms still apply to this use; it is built to be light, but ask Trade Me before relying on it heavily. Trade Me's API is not an option: it is only for sellers in the trade.
 
 ## Scraping with consideration (`server/transport.ts`)
 

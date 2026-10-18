@@ -2,6 +2,8 @@ import { loadConfig } from "./config.ts";
 import { connect, migrate } from "./db.ts";
 import { ObjectStore } from "./store.ts";
 import { ImageFetcher } from "./images.ts";
+import { Firecrawl } from "./firecrawl.ts";
+import { robotsLoader } from "./trademe.ts";
 import { Number8Transport, RequestGate } from "./transport.ts";
 
 export async function appContext() {
@@ -22,5 +24,7 @@ export async function appContext() {
     new Number8Transport({ baseUrl: config.baseUrl, contact: config.contact, minIntervalMs: config.minIntervalMs, concurrency, signal, gate });
   const makeImageFetcher = () =>
     new ImageFetcher({ userAgent: `BidScout/0.1 (lot photo reading${config.contact ? `; contact ${config.contact}` : ""})` });
-  return { config, db, store, makeTransport, makeImageFetcher };
+  const firecrawl = config.firecrawlKey ? new Firecrawl(config.firecrawlKey, { base: config.firecrawlUrl }) : null;
+  const tradeMeRobots = robotsLoader();
+  return { config, db, store, makeTransport, makeImageFetcher, firecrawl, tradeMeRobots };
 }

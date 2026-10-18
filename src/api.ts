@@ -105,8 +105,50 @@ export interface LotDetail {
   revisions: Array<{ id: number; created_at: string }>;
   watchers: Array<{ id: number; display_name: string; added_at: string }>;
   photoValues: Array<{ id: number; field: string; value: string; quote: string; confidence: number; image_url: string }>;
+  tradeMe: TradeMeState;
   friendBids: Array<{ user_id: number; display_name: string; kind: "high_bidder" | "bid"; amount: number | null; bid_at: string | null; seen_at: string }>;
   comps: Array<{ id: number; title: string; final_bid: number; all_in: number; closed_at: string; faults: string[]; auction_title: string; item_url: string | null; thumb_url: string | null; bid_count: number | null; outcome_snapshot_id: number; outcome_path: string }>;
+}
+
+export interface TradeMeItem {
+  id: number;
+  url: string;
+  listing_id: string;
+  title: string | null;
+  status: "open" | "closed" | "sold" | null;
+  price: number | null;
+  price_kind: "sold" | "current_bid" | "buy_now" | "asking" | "starting" | null;
+  buy_now: number | null;
+  bid_count: number | null;
+  condition: string | null;
+  closes: string | null;
+  location: string | null;
+  excerpt: string | null;
+  quote_start: number | null;
+  quote_end: number | null;
+  verified: boolean;
+  page_sha256: string;
+  fetched_at: string;
+}
+
+export interface TradeMeLookup {
+  id: number;
+  query: string;
+  status: "ok" | "failed";
+  error: string | null;
+  searched: number;
+  found: number;
+  created_at: string;
+  items: TradeMeItem[];
+  cached?: boolean;
+}
+
+export interface TradeMeState {
+  available: boolean;
+  reason: string | null;
+  used: number;
+  dailyLimit: number;
+  latest: TradeMeLookup | null;
 }
 
 export interface Auction {
@@ -160,6 +202,7 @@ export interface SnapshotMeta {
 export type Citation =
   | { kind: "spec"; field: string; value: string; method: string; source: string; path: string; text: string; start: number; end: number; quote: string; verified: boolean; lotUrl?: string; snapshot: SnapshotMeta }
   | { kind: "field"; path: string; value: unknown; context: Record<string, unknown> | null; snapshot: SnapshotMeta }
+  | { kind: "external"; site: string; url: string; value: string; excerpt: string; start: number; end: number; fetchedAt: string; sha256: string }
   | { kind: "photo"; field: string; value: string; quote: string; confidence: number; boxes: Array<[number, number, number, number]>; width: number | null; height: number | null; image: string; imageUrl: string; sha256: string; ocr: string; readAt: string; lotUrl: string | null };
 
 export interface ScanRun {
@@ -234,6 +277,7 @@ export const api = {
   photoValue: (id: number) => call<Citation>(`/api/photo-values/${id}`),
   auctions: (scope: "live" | "closed") => call<{ auctions: Auction[] }>(`/api/auctions?scope=${scope}`),
   auction: (id: number) => call<Auction>(`/api/auctions/${id}`),
+  tradeMe: (id: number, query: string) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ query }) }),
   refreshLot: (id: number) => call<{ ok: true }>(`/api/lots/${id}/refresh`, { method: "POST", body: "{}" }),
 };
 
@@ -260,6 +304,19 @@ export interface ScanSettings {
   concurrency: number;
 }
 
+export interface TradeMeSettings {
+  enabled: boolean;
+  dailyLimit: number;
+}
+
+export interface SettingsResponse {
+  scan: ScanSettings;
+  liveHourOptions: number[];
+  trademe: TradeMeSettings;
+  trademeLimitOptions: number[];
+  trademeKeySet: boolean;
+}
+
 export const account = {
   me: () => call<Me>(`/api/me`),
   login: (username: string, password: string) => call<{ ok: true }>(`/api/auth/login`, { method: "POST", body: JSON.stringify({ username, password }) }),
@@ -271,6 +328,7 @@ export const account = {
   updateUser: (id: number, body: { display_name?: string; is_admin?: boolean; disabled?: boolean; password?: string }) =>
     call(`/api/admin/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteUser: (id: number) => call(`/api/admin/users/${id}`, { method: "DELETE" }),
-  settings: () => call<{ scan: ScanSettings; liveHourOptions: number[] }>(`/api/settings`),
-  saveSettings: (scan: Partial<ScanSettings>) => call<{ scan: ScanSettings }>(`/api/settings`, { method: "PUT", body: JSON.stringify({ scan }) }),
+  settings: () => call<SettingsResponse>(`/api/settings`),
+  saveSettings: (scan: Partial<ScanSettings>) => call<{ scan: ScanSettings; trademe: TradeMeSettings }>(`/api/settings`, { method: "PUT", body: JSON.stringify({ scan }) }),
+  saveTradeMe: (trademe: Partial<TradeMeSettings>) => call<{ scan: ScanSettings; trademe: TradeMeSettings }>(`/api/settings`, { method: "PUT", body: JSON.stringify({ trademe }) }),
 };

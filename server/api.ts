@@ -15,7 +15,8 @@ import { MIN_PHOTO_CONFIDENCE, OCR_VERSION } from "../shared/specs/photo.ts";
 import { getAuction, listAuctions } from "./auctions.ts";
 import { refreshLot } from "./scan/refresh.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
-import { getScanSettings, LIVE_HOURS, saveScanSettings } from "./settings.ts";
+import { getScanSettings, getTradeMeSettings, LIVE_HOURS, saveScanSettings, saveTradeMeSettings, TRADEME_LIMITS } from "./settings.ts";
+import { loadLookup, LookupError, tradeMeLookup, tradeMeStatus } from "./trademe.ts";
 import { LOT_COLUMNS, LOT_JOINS, parseQuery, searchLots } from "./search.ts";
 import { loadSnapshotDoc } from "./snapshots.ts";
 import { runWorkerLoop } from "./worker.ts";
@@ -185,10 +186,14 @@ app.delete<{ Params: { id: string } }>("/api/admin/users/:id", { preHandler: req
   return { ok: true };
 });
 
-app.get("/api/settings", async () => ({ scan: await getScanSettings(db), liveHourOptions: LIVE_HOURS }));
+app.get("/api/settings", async () => ({
+  scan: await getScanSettings(db), liveHourOptions: LIVE_HOURS,
+  trademe: await getTradeMeSettings(db), trademeLimitOptions: TRADEME_LIMITS, trademeKeySet: !!ctx.firecrawl,
+}));
 
-app.put<{ Body: { scan?: Record<string, unknown> } }>("/api/settings", { preHandler: requireAdmin }, async (req) => ({
-  scan: await saveScanSettings(db, (req.body?.scan ?? {}) as never, uid(req)),
+app.put<{ Body: { scan?: Record<string, unknown>; trademe?: Record<string, unknown> } }>("/api/settings", { preHandler: requireAdmin }, async (req) => ({
+  scan: req.body?.scan ? await saveScanSettings(db, req.body.scan as never, uid(req)) : await getScanSettings(db),
+  trademe: req.body?.trademe ? await saveTradeMeSettings(db, req.body.trademe as never, uid(req)) : await getTradeMeSettings(db),
 }));
 
 const snapshotMeta = (m: Record<string, unknown>) => ({
@@ -268,10 +273,25 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
         [id, compKey, !!suffix],
       )
     : { rows: [] };
+  const latestLookup = (await db.query(`SELECT id FROM price_lookups WHERE source='trademe' AND lot_id=$1 ORDER BY id DESC LIMIT 1`, [id])).rows[0];
   return {
     lot, specs: specs.rows, observations: obs.rows, terms: terms.rows[0] ?? null, revisions: revs.rows, comps: comps.rows,
     watchers: watchers.rows, friendBids: friendBids.rows, photoValues: photoValues.rows,
+    tradeMe: { ...(await tradeMeStatus(db, ctx.firecrawl)), latest: latestLookup ? await loadLookup(db, Number(latestLookup.id)) : null },
   };
+});
+
+/** Trade Me prices for a lot (server/trademe.ts): reuses an answer under 3 days old for the same search text. */
+app.post<{ Params: { id: string }; Body: { query?: string } }>("/api/lots/:id/trademe", async (req, reply) => {
+  try {
+    return await tradeMeLookup(
+      { db, firecrawl: ctx.firecrawl, robots: ctx.tradeMeRobots },
+      { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? "") },
+    );
+  } catch (e) {
+    const status = e instanceof LookupError ? e.status : 502;
+    return reply.code(status).send({ error: (e as Error).message });
+  }
 });
 
 /** The exact words behind a spec value, re-read from the stored snapshot and checked. */

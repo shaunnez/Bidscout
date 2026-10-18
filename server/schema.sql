@@ -379,3 +379,50 @@ ALTER TABLE lots ADD COLUMN IF NOT EXISTS photo_ocr_version text;
 UPDATE lots l SET photo_ocr_version = r.v
   FROM (SELECT DISTINCT ON (lot_id) lot_id, ocr_version AS v FROM photo_reads ORDER BY lot_id, id DESC) r
   WHERE r.lot_id = l.id AND l.photo_ocr_version IS NULL;
+
+-- Trade Me price lookups (server/trademe.ts): one row per button press that went to Trade Me,
+-- and the listings it read. No foreign key to lots, so lookups survive a replay.
+CREATE TABLE IF NOT EXISTS price_lookups (
+  id bigserial PRIMARY KEY,
+  source text NOT NULL,
+  query text NOT NULL,
+  query_key text NOT NULL,
+  lot_id int,
+  requested_by bigint REFERENCES users(id) ON DELETE SET NULL,
+  status text NOT NULL,
+  error text,
+  searched int NOT NULL DEFAULT 0,
+  found int NOT NULL DEFAULT 0,
+  credits int,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS price_lookups_key ON price_lookups (source, query_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS price_lookups_lot ON price_lookups (lot_id, created_at DESC);
+
+-- A listing read for a lookup. The price is "verified" when its text was found on the page;
+-- the excerpt around it is kept (contact details removed) as the citation, not the whole page.
+CREATE TABLE IF NOT EXISTS price_lookup_items (
+  id bigserial PRIMARY KEY,
+  lookup_id bigint NOT NULL REFERENCES price_lookups(id),
+  url text NOT NULL,
+  listing_id text NOT NULL,
+  title text,
+  status text,
+  price numeric,
+  price_kind text,
+  buy_now numeric,
+  bid_count int,
+  condition text,
+  closes text,
+  location text,
+  excerpt text,
+  quote_start int,
+  quote_end int,
+  verified boolean NOT NULL,
+  page_sha256 text NOT NULL,
+  fetched_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS price_lookup_items_lookup ON price_lookup_items (lookup_id);
+DROP TRIGGER IF EXISTS price_lookup_items_immutable ON price_lookup_items;
+CREATE TRIGGER price_lookup_items_immutable BEFORE UPDATE ON price_lookup_items
+  FOR EACH ROW EXECUTE FUNCTION bidscout_immutable();

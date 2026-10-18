@@ -394,3 +394,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   .banner-side { align-items: flex-start; width: 100%; }
   .lookup-links { grid-template-columns: 1fr 1fr; }
 }
+
+/* Trade Me prices (lot drawer) */
+.tm { display: flex; flex-direction: column; gap: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.tm-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tm-head .primary { padding: 7px 14px; }
+.tm-summary { margin: 0; font-size: 13.5px; }
+.tm .table td a { color: var(--text); font-weight: 600; text-decoration: none; }
+.tm .table td a:hover { text-decoration: underline; }
