@@ -134,6 +134,9 @@ export interface TradeMeItem {
   price: number | null;
   price_kind: "sold" | "current_bid" | "buy_now" | "asking" | "starting" | null;
   buy_now: number | null;
+  buy_now_excerpt: string | null;
+  buy_now_start: number | null;
+  buy_now_end: number | null;
   bid_count: number | null;
   condition: string | null;
   closes: string | null;

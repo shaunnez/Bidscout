@@ -503,11 +503,14 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
   const priced = (res?.items ?? []).filter((i) => i.verified && i.price);
   const isSold = (i: TradeMeItem) => i.status === "sold" || i.price_kind === "sold";
   const sold = priced.filter(isSold).map((i) => Number(i.price));
-  const live = priced.filter((i) => !isSold(i)).map((i) => Number(i.price));
-  const cite = (i: TradeMeItem) =>
+  // "On now" is open listings only; ended-unsold or unknown ones aren't prices you can buy at.
+  const live = priced.filter((i) => !isSold(i) && i.status === "open").map((i) => Number(i.price));
+  const cite = (i: TradeMeItem, buyNow = false) =>
     onCite({
-      title: "Trade Me price",
-      load: async () => ({ kind: "external", site: "Trade Me", url: i.url, value: `${TM_KIND[i.price_kind ?? ""] ?? "Price"} ${money(i.price)}`, excerpt: i.excerpt!, start: i.quote_start!, end: i.quote_end!, fetchedAt: i.fetched_at, sha256: i.page_sha256 }),
+      title: buyNow ? "Trade Me Buy Now" : "Trade Me price",
+      load: async () => buyNow
+        ? { kind: "external", site: "Trade Me", url: i.url, value: `Buy Now ${money(i.buy_now)}`, excerpt: i.buy_now_excerpt!, start: i.buy_now_start!, end: i.buy_now_end!, fetchedAt: i.fetched_at, sha256: i.page_sha256 }
+        : { kind: "external", site: "Trade Me", url: i.url, value: `${TM_KIND[i.price_kind ?? ""] ?? "Price"} ${money(i.price)}`, excerpt: i.excerpt!, start: i.quote_start!, end: i.quote_end!, fetchedAt: i.fetched_at, sha256: i.page_sha256 },
     });
   return (
     <div className="tm">
@@ -546,7 +549,10 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
                         {i.price === null ? "–" : i.verified
                           ? <button className="cite inline" onClick={() => cite(i)}>{money(i.price)}</button>
                           : <span title="Read by Firecrawl but not found in the page text, so not used">{money(i.price)}?</span>}
-                        <div className="muted small">{TM_KIND[i.price_kind ?? ""] ?? ""}{i.buy_now && i.price_kind !== "buy_now" ? ` · Buy Now ${money(i.buy_now)}` : ""}</div>
+                        <div className="muted small">
+                          {TM_KIND[i.price_kind ?? ""] ?? ""}
+                          {i.buy_now && i.buy_now_excerpt && i.price_kind !== "buy_now" && <> · <button className="cite inline" onClick={() => cite(i, true)}>Buy Now {money(i.buy_now)}</button></>}
+                        </div>
                       </td>
                     </tr>
                   ))}

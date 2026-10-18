@@ -426,3 +426,16 @@ CREATE INDEX IF NOT EXISTS price_lookup_items_lookup ON price_lookup_items (look
 DROP TRIGGER IF EXISTS price_lookup_items_immutable ON price_lookup_items;
 CREATE TRIGGER price_lookup_items_immutable BEFORE UPDATE ON price_lookup_items
   FOR EACH ROW EXECUTE FUNCTION bidscout_immutable();
+
+-- Buy Now prices get their own quote (they're shown too).
+ALTER TABLE price_lookup_items ADD COLUMN IF NOT EXISTS buy_now_excerpt text;
+ALTER TABLE price_lookup_items ADD COLUMN IF NOT EXISTS buy_now_start int;
+ALTER TABLE price_lookup_items ADD COLUMN IF NOT EXISTS buy_now_end int;
+-- Which lots ran or reused which lookup, so a saved answer reappears on every lot that used it.
+CREATE TABLE IF NOT EXISTS price_lookup_lots (
+  lookup_id bigint NOT NULL REFERENCES price_lookups(id),
+  lot_id int NOT NULL,
+  used_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (lookup_id, lot_id)
+);
+CREATE INDEX IF NOT EXISTS price_lookup_lots_lot ON price_lookup_lots (lot_id, used_at DESC);

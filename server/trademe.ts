@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { Db } from "./db.ts";
+import { tx, type Db } from "./db.ts";
 import type { FirecrawlClient } from "./firecrawl.ts";
 import { stripContacts } from "./redact.ts";
 import { parseRobots, robotsAllows, type Robots } from "./robots.ts";
@@ -56,6 +56,9 @@ export interface TradeMeItem {
   price: number | null;
   price_kind: string | null;
   buy_now: number | null;
+  buy_now_excerpt: string | null;
+  buy_now_start: number | null;
+  buy_now_end: number | null;
   bid_count: number | null;
   condition: string | null;
   closes: string | null;
@@ -99,8 +102,10 @@ export function findPrice(markdown: string, price: number | null): { excerpt: st
     }
   }
   if (at < 0) return null;
-  const before = stripContacts(markdown.slice(Math.max(0, at - 90), at)).replace(/\s+/g, " ").trimStart();
-  const after = stripContacts(markdown.slice(at + quote.length, at + quote.length + 90)).replace(/\s+/g, " ").trimEnd();
+  // Contact details are removed from a wide window first, then trimmed to 90 characters each side,
+  // so trimming can't cut an email or phone number short of being recognised.
+  const before = stripContacts(markdown.slice(Math.max(0, at - 400), at)).replace(/\s+/g, " ").slice(-90).trimStart();
+  const after = stripContacts(markdown.slice(at + quote.length, at + quote.length + 400)).replace(/\s+/g, " ").slice(0, 90).trimEnd();
   return { excerpt: before + quote + after, start: before.length, end: before.length + quote.length };
 }
 
@@ -113,13 +118,19 @@ export function toItem(url: string, listingId: string, markdown: string, json: R
   const j = json ?? {};
   const price = num(j.price);
   const found = findPrice(markdown, price);
+  // Buy Now is shown too, so it needs its own quote; dropped when it isn't on the page.
+  const buyNow = num(j.buy_now);
+  const buyNowFound = findPrice(markdown, buyNow);
   return {
     url, listing_id: listingId,
     title: str(j.title),
     status: oneOf(j.status, ["open", "closed", "sold"]),
     price,
     price_kind: oneOf(j.price_kind, ["sold", "current_bid", "buy_now", "asking", "starting"]),
-    buy_now: num(j.buy_now),
+    buy_now: buyNowFound ? buyNow : null,
+    buy_now_excerpt: buyNowFound?.excerpt ?? null,
+    buy_now_start: buyNowFound?.start ?? null,
+    buy_now_end: buyNowFound?.end ?? null,
     bid_count: Number.isInteger(j.bid_count) ? (j.bid_count as number) : null,
     condition: oneOf(j.condition, ["new", "used", "refurbished"]),
     closes: str(j.closes, 80),
@@ -166,18 +177,33 @@ export async function loadLookup(db: Db, id: number) {
   return { ...l, items };
 }
 
-/** Is the button usable right now, and if not, why not. */
-export async function tradeMeStatus(db: Db, firecrawl: FirecrawlClient | null) {
-  const s = await getTradeMeSettings(db);
+/** Is the button usable right now, and if not, why not. Every lookup in the last 24 hours counts, failed or running. */
+export async function tradeMeStatus(db: Pick<Db, "query">, firecrawl: FirecrawlClient | null) {
+  const s = await getTradeMeSettings(db as Db);
   const used = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE source='trademe' AND created_at > now() - interval '24 hours'`)).rows[0].n);
   const reason = !firecrawl ? "Needs a Firecrawl API key (FIRECRAWL_API_KEY in Railway)." : !s.enabled ? "An admin can turn Trade Me prices on in Settings." : used >= s.dailyLimit ? `The group's ${s.dailyLimit} lookups for the last 24 hours are used up.` : null;
   return { available: !reason, reason, used, dailyLimit: s.dailyLimit };
 }
 
+/** The newest successful lookup this lot ran or reused. */
+export async function latestForLot(db: Db, lotId: number) {
+  const r = await db.query(
+    `SELECT pl.id FROM price_lookup_lots k JOIN price_lookups pl ON pl.id = k.lookup_id
+     WHERE k.lot_id = $1 AND pl.status = 'ok' ORDER BY k.used_at DESC LIMIT 1`,
+    [lotId],
+  );
+  return r.rows[0] ? loadLookup(db, Number(r.rows[0].id)) : null;
+}
+
+const linkLot = (db: Db, lookupId: number, lotId: number | null) =>
+  lotId === null
+    ? Promise.resolve()
+    : db.query(`INSERT INTO price_lookup_lots (lookup_id, lot_id) VALUES ($1,$2) ON CONFLICT (lookup_id, lot_id) DO UPDATE SET used_at = now()`, [lookupId, lotId]);
+
 const running = new Map<string, Promise<unknown>>();
 
 /** Runs (or reuses) a Trade Me lookup for `query`. */
-export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | null; userId: number; query: string }) {
+export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | null; userId: number; query: string }): Promise<any> {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -190,24 +216,44 @@ export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | n
      ORDER BY id DESC LIMIT 1`,
     [key, now(), CACHE_DAYS],
   )).rows[0];
-  if (cached) return { ...(await loadLookup(db, Number(cached.id)))!, cached: true };
-
-  const status = await tradeMeStatus(db, deps.firecrawl);
-  if (!status.available) throw new LookupError(status.reason!, deps.firecrawl ? 403 : 503);
+  if (cached) {
+    await linkLot(db, Number(cached.id), input.lotId);
+    return { ...(await loadLookup(db, Number(cached.id)))!, cached: true };
+  }
   if (running.has(key)) {
-    await running.get(key);
+    await running.get(key)?.catch(() => {});
     return tradeMeLookup(deps, input);
   }
-  const work = run(deps, input, query, key, now, sleep);
+  const id = await reserve(deps, input, query, key, now);
+  const work = run(deps, id, query, sleep, now);
   running.set(key, work);
   try {
-    return { ...(await work), cached: false };
+    await work;
+    await linkLot(db, id, input.lotId);
+    return { ...(await loadLookup(db, id))!, cached: false };
   } finally {
     running.delete(key);
   }
 }
 
-async function run(deps: LookupDeps, input: { lotId: number | null; userId: number }, query: string, key: string, now: () => Date, sleep: (ms: number) => Promise<void>) {
+/**
+ * Takes one of the group's daily lookups: under a lock, so two people starting different
+ * searches at once can't both pass the limit. The row stays 'running' until the answer is saved.
+ */
+async function reserve(deps: LookupDeps, input: { lotId: number | null; userId: number }, query: string, key: string, now: () => Date) {
+  return tx(deps.db, async (c) => {
+    await c.query(`SELECT pg_advisory_xact_lock(hashtext('bidscout:trademe-limit'))`);
+    const status = await tradeMeStatus(c, deps.firecrawl);
+    if (!status.available) throw new LookupError(status.reason!, deps.firecrawl ? 403 : 503);
+    const r = await c.query(
+      `INSERT INTO price_lookups (source, query, query_key, lot_id, requested_by, status, created_at) VALUES ('trademe',$1,$2,$3,$4,'running',$5) RETURNING id`,
+      [query, key, input.lotId, input.userId, now()],
+    );
+    return Number(r.rows[0].id);
+  });
+}
+
+async function run(deps: LookupDeps, id: number, query: string, sleep: (ms: number) => Promise<void>, now: () => Date) {
   const { db } = deps;
   const fc = deps.firecrawl!;
   const items: TradeMeItem[] = [];
@@ -223,8 +269,10 @@ async function run(deps: LookupDeps, input: { lotId: number | null; userId: numb
     const targets = found.results
       .map((r) => listingUrl(r.url))
       .filter((l): l is { url: string; listingId: string } => !!l && !seen.has(l.listingId) && !!seen.add(l.listingId))
-      .filter((l) => robotsAllows(robots, l.url, AGENTS))
+      // Each identity is checked on its own (BidScout asks, Firecrawl fetches); all must be allowed.
+      .filter((l) => AGENTS.every((a) => robotsAllows(robots, l.url, [a])))
       .slice(0, MAX_LISTINGS);
+    let failedPages = 0;
     for (const [i, t] of targets.entries()) {
       if (i > 0) await sleep(1000);
       try {
@@ -234,26 +282,25 @@ async function run(deps: LookupDeps, input: { lotId: number | null; userId: numb
         items.push(toItem(t.url, t.listingId, page.markdown, page.json, now()));
       } catch (e) {
         if ((e as { status?: number }).status === 402) throw e;
-        // One unreadable listing doesn't spoil the rest.
+        failedPages++; // one unreadable listing doesn't spoil the rest
       }
     }
+    // If every page failed, it's an outage, not an answer: don't keep it for 3 days.
+    if (targets.length && failedPages === targets.length) throw new Error(`Couldn't read any of the ${targets.length} listings found; try again later.`);
   } catch (e) {
     error = (e as Error).message;
   }
-  const r = await db.query(
-    `INSERT INTO price_lookups (source, query, query_key, lot_id, requested_by, status, error, searched, found, credits, created_at)
-     VALUES ('trademe',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-    [query, key, input.lotId, input.userId, error ? "failed" : "ok", error, searched, items.length, credits || null, now()],
-  );
-  const id = Number(r.rows[0].id);
-  for (const it of items)
-    await db.query(
-      `INSERT INTO price_lookup_items (lookup_id, url, listing_id, title, status, price, price_kind, buy_now, bid_count, condition, closes,
-         location, excerpt, quote_start, quote_end, verified, page_sha256, fetched_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
-      [id, it.url, it.listing_id, it.title, it.status, it.price, it.price_kind, it.buy_now, it.bid_count, it.condition, it.closes,
-        it.location, it.excerpt, it.quote_start, it.quote_end, it.verified, it.page_sha256, it.fetched_at],
-    );
+  // The answer becomes visible (status 'ok') in the same transaction that saves its listings.
+  await tx(db, async (c) => {
+    for (const it of items)
+      await c.query(
+        `INSERT INTO price_lookup_items (lookup_id, url, listing_id, title, status, price, price_kind, buy_now, buy_now_excerpt, buy_now_start,
+           buy_now_end, bid_count, condition, closes, location, excerpt, quote_start, quote_end, verified, page_sha256, fetched_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+        [id, it.url, it.listing_id, it.title, it.status, it.price, it.price_kind, it.buy_now, it.buy_now_excerpt, it.buy_now_start,
+          it.buy_now_end, it.bid_count, it.condition, it.closes, it.location, it.excerpt, it.quote_start, it.quote_end, it.verified, it.page_sha256, it.fetched_at],
+      );
+    await c.query(`UPDATE price_lookups SET status=$2, error=$3, searched=$4, found=$5, credits=$6 WHERE id=$1`, [id, error ? "failed" : "ok", error, searched, items.length, credits || null]);
+  });
   if (error) throw new LookupError(error, 502);
-  return (await loadLookup(db, id))!;
 }

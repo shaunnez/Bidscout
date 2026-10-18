@@ -108,3 +108,28 @@ test("Firecrawl client: bearer auth, v2 bodies, one retry on 429, a clear messag
   assert.equal(p.statusCode, 200);
   await assert.rejects(fc.scrape("u", { schema: {}, prompt: "p", maxAgeMs: 1 }), /out of credits/);
 });
+
+test("robots.txt is checked for each identity on its own: a BidScout group doesn't excuse Firecrawl from *", () => {
+  const r = parseRobots("User-agent: BidScout\nAllow: /\n\nUser-agent: *\nDisallow: /a/marketplace/x/listing/\n");
+  const url = "https://www.trademe.co.nz/a/marketplace/x/listing/1";
+  assert.equal(robotsAllows(r, url, ["bidscout"]), true);
+  assert.equal(robotsAllows(r, url, ["firecrawlagent"]), false);
+  assert.equal(["bidscout", "firecrawlagent"].every((a) => robotsAllows(r, url, [a])), false);
+});
+
+test("contact details crossing the excerpt edge are removed before trimming", () => {
+  const md = "x".repeat(200) + " call 021 234 5678 " + "y".repeat(76) + "Price $500 " + "z".repeat(85) + " mail longname.someone@example.co.nz end";
+  const f = findPrice(md, 500)!;
+  assert.ok(!/234 5678|5678|someone@|example\.co/.test(f.excerpt), f.excerpt);
+  assert.equal(f.excerpt.slice(f.start, f.end), "$500");
+});
+
+test("a Buy Now price is kept only when it is written on the page, with its own quote", () => {
+  const md = "ThinkPad\nCurrent bid $410\nBuy Now $650";
+  const ok = toItem("u", "1", md, { price: 410, price_kind: "current_bid", buy_now: 650 }, new Date(0));
+  assert.equal(ok.buy_now, 650);
+  assert.equal(ok.buy_now_excerpt!.slice(ok.buy_now_start!, ok.buy_now_end!), "$650");
+  const made = toItem("u", "1", md, { price: 410, buy_now: 999 }, new Date(0));
+  assert.equal(made.buy_now, null);
+  assert.equal(made.buy_now_excerpt, null);
+});

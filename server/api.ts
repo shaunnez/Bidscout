@@ -17,7 +17,7 @@ import { photoSummary } from "./photo-summary.ts";
 import { refreshLot } from "./scan/refresh.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
 import { getScanSettings, getTradeMeSettings, LIVE_HOURS, saveScanSettings, saveTradeMeSettings, TRADEME_LIMITS } from "./settings.ts";
-import { loadLookup, LookupError, tradeMeLookup, tradeMeStatus } from "./trademe.ts";
+import { latestForLot, LookupError, tradeMeLookup, tradeMeStatus } from "./trademe.ts";
 import { LOT_COLUMNS, LOT_JOINS, parseQuery, searchLots } from "./search.ts";
 import { loadSnapshotDoc } from "./snapshots.ts";
 import { runWorkerLoop } from "./worker.ts";
@@ -277,11 +277,10 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
         [id, compKey, !!suffix],
       )
     : { rows: [] };
-  const latestLookup = (await db.query(`SELECT id FROM price_lookups WHERE source='trademe' AND lot_id=$1 ORDER BY id DESC LIMIT 1`, [id])).rows[0];
   return {
     lot, specs: specs.rows, observations: obs.rows, terms: terms.rows[0] ?? null, revisions: revs.rows, comps: comps.rows,
     watchers: watchers.rows, friendBids: friendBids.rows, photoValues: photoValues.rows,
-    tradeMe: { ...(await tradeMeStatus(db, ctx.firecrawl)), latest: latestLookup ? await loadLookup(db, Number(latestLookup.id)) : null },
+    tradeMe: { ...(await tradeMeStatus(db, ctx.firecrawl)), latest: await latestForLot(db, id) },
   };
 });
 
