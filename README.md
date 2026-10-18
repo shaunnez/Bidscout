@@ -82,7 +82,8 @@ Trade Me's terms still apply to this use; ask Trade Me before relying on it heav
 - One scan at a time across the whole app (a unique index on active runs).
 - Up to 4 requests in flight (Settings → Requests at a time, 1–4), with request starts at least 0.3 s apart. One at a time means at least 1.2 s between requests plus up to 0.4 s of jitter (`BIDSCOUT_MIN_INTERVAL_MS` can raise it, never below 1 s).
 - Every request the app makes to number8.bid shares one set of slots and spacing (`RequestGate`), so **Refresh now** during a scan takes one of the scan's slots rather than adding to them. This holds because the worker runs inside the one instance.
-- Any slow reply (over 3 s) or 429/503 drops the scan to one request at a time for the rest of the run. If one parallel request stops the run, the others are cancelled.
+- Any slow reply (over 3 s) or 429/503 drops the scan to one request at a time. It climbs back one request at a time after every 20 quick replies in a row (under 2 s each), up to the setting. If one parallel request stops the run, the others are cancelled.
+- Past-sales pages are read ahead: the next pages download through the same paced transport while the current ones are stored (not for the weekly top-up, never past the last page or the run's page limit).
 - A weekly past-sales top-up reads one page at a time, so it stops at the first page with nothing new without fetching past it.
 - After a reply that took over 3 s, the next gap is twice that reply's time (capped at 30 s).
 - Past sales are read 60 to a page, the largest page the site's own menu offers. A 200-row page took 17 s for their server.

@@ -331,3 +331,39 @@ test("only one scan can be active, and a second start reuses it", async () => {
 function walk(d: string): string[] {
   return fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : e.name.endsWith(".gz") ? [path.join(d, e.name)] : []));
 }
+
+test("history reads pages ahead while storing: each page once, in order, never past the last page or the page limit", async () => {
+  const db = connect(url);
+  await migrate(db);
+  const store = new ObjectStore(fs.mkdtempSync(path.join(os.tmpdir(), "bidscout-")));
+  const asked: number[] = [];
+  const transport: Transport = {
+    stats: { requests: 0, retries: 0, throttles: 0 },
+    parallelism: 2,
+    async get() { throw new Error("unused"); },
+    async post(p, form) {
+      const page = Number(form["filters[page]"]);
+      asked.push(page);
+      await new Promise((r) => setTimeout(r, 2));
+      const body = { total: 9, page, total_pages: 9, items: [{ id: String(7700 + page), auction_id: "81", auction_title: "Closed - Paged Sale", lot_number: String(page),
+        title: `Dell OptiPlex 70${page}0 - Desktop`, description: "Type &#8211; Desktop", category_name: "IT & Equipment", buyer_premium: "15.000",
+        current_bid: "50.00", bid_count: "2", ends: Math.floor(NOW.getTime() / 1000) - 86_400 * page }] };
+      return { method: "POST", url: `https://www.number8.bid${p}`, requestBody: "", status: 200, body: Buffer.from(JSON.stringify(body)), elapsedMs: 5, attempts: 1 };
+    },
+  };
+  const deps = { db, store, makeTransport: () => transport, now: () => NOW };
+  await db.query(`UPDATE scan_runs SET state='complete' WHERE state IN ('queued','running')`);
+
+  await startRun(db, "history", { maxPages: 5 });
+  await workOneRun(deps);
+  assert.deepEqual([...asked].sort((a, b) => a - b), [1, 2, 3, 4, 5], "no page past the run's limit");
+  asked.length = 0;
+  await startRun(db, "history", {}, true);
+  await workOneRun(deps);
+  assert.deepEqual([...asked].sort((a, b) => a - b), [6, 7, 8, 9], "resumes at page 6 and stops at the last page");
+  const stored = (await db.query(`SELECT count(*)::int AS n FROM lots WHERE id BETWEEN 7701 AND 7709`)).rows[0].n;
+  assert.equal(stored, 9);
+  const last = (await db.query(`SELECT state, pages_read FROM scan_runs ORDER BY id DESC LIMIT 1`)).rows[0];
+  assert.deepEqual([last.state, last.pages_read], ["complete", 4]);
+  await db.end();
+});
