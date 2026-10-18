@@ -6,8 +6,9 @@
  *   least `minIntervalMs` apart (never under 1s) plus jitter; with more, request starts are
  *   still spaced at least 300 ms apart.
  * - Slow responses slow us down: after a reply that took over 3s, or any 429/503, the
- *   transport drops to one request at a time for the rest of the scan, and the next gap is
- *   twice that reply's time (capped at 30s), so a busy server gets breathing room.
+ *   transport drops to one request at a time, and the next gap is twice that reply's time
+ *   (capped at 30s), so a busy server gets breathing room. It climbs back one request at a
+ *   time, after every 20 quick replies in a row (under 2 s each), up to the scan's setting.
  * - Retries only for failures that can pass: network errors, timeouts, 408/425/5xx.
  *   Backoff 2s, 4s, 8s, 16s (+ jitter), at most `maxRetries` times.
  * - 429 and 503 mean "slow down": wait for Retry-After (default 60s, at most 15 min).
@@ -85,6 +86,10 @@ export interface TransportOptions {
 
 /** Closest two request starts may be when running more than one at a time. */
 export const MIN_PARALLEL_SPACING_MS = 300;
+/** Replies quicker than this count towards climbing back after a slow-down... */
+export const QUICK_REPLY_MS = 2000;
+/** ...and this many in a row add one request at a time. */
+export const QUICK_TO_CLIMB = 20;
 
 const ALLOWED = /^\/(api|auxiliary)\//;
 const DISALLOWED = /^\/(admin|myaccount)(\/|$)/i;
@@ -116,20 +121,38 @@ export function retryAfterMs(header: string | null, now: number): number {
 /**
  * Request slots and start spacing shared by every transport in a process. A scan sets the
  * limit when it starts (its concurrency setting); anything else, such as a manual refresh,
- * uses whatever limit is current. A slow reply or a 429/503 drops it to one for everyone.
+ * uses whatever limit is current. A slow reply or a 429/503 drops it to one for everyone; a run
+ * of quick replies raises it again, one at a time, up to the setting.
  */
 export class RequestGate {
   limit = 1;
+  /** The scan's setting: the most `limit` climbs back to. */
+  ceiling = 1;
   inFlight = 0;
   nextAt = 0;
+  private quickInARow = 0;
   private waiting: Array<() => void> = [];
 
   configure(concurrency: number) {
-    this.limit = Math.min(4, Math.max(1, Math.round(concurrency)));
+    this.limit = this.ceiling = Math.min(4, Math.max(1, Math.round(concurrency)));
+    this.quickInARow = 0;
   }
 
   slowDown() {
     this.limit = 1;
+    this.quickInARow = 0;
+  }
+
+  /** A reply's time: quick ones in a row raise the limit by one, up to the setting. */
+  replied(elapsedMs: number) {
+    if (elapsedMs >= QUICK_REPLY_MS) {
+      this.quickInARow = 0;
+      return;
+    }
+    if (++this.quickInARow < QUICK_TO_CLIMB || this.limit >= this.ceiling) return;
+    this.quickInARow = 0;
+    this.limit++;
+    this.waiting.shift()?.();
   }
 
   /** No request may start before `at`. */
@@ -303,12 +326,15 @@ export class Number8Transport implements Transport {
       const head = buf.subarray(0, 200).toString("utf8").trimStart().toLowerCase();
       if (path.startsWith("/api/") && (type.includes("text/html") || head.startsWith("<!doctype") || head.startsWith("<html")))
         throw new StopRunError(`Expected JSON from ${path} but got a web page (challenge or login?)`, "challenge");
+      // Only a good reply counts towards climbing back (a quick challenge page must not).
+      this.gate.replied(elapsedMs);
       return { method, url, requestBody: body, status: res.status, body: buf, elapsedMs, attempts: attempt };
     }
   }
 
   private async backoff(attempt: number, why: string) {
     this.stats.retries++;
+    this.gate.replied(Infinity); // a failed attempt breaks a run of quick replies
     const ms = 2000 * 2 ** (attempt - 1) + Math.floor(this.o.random() * 1000);
     await this.wait(ms, `retry ${attempt} after ${why}`);
   }

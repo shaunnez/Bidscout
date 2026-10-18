@@ -46,7 +46,7 @@ export function Scans({ scan, openLot }: { scan: { run: ScanRun | null; active: 
             {settings?.scheduleEnabled
               ? `Live auctions are scanned every ${settings.liveEveryHours} hour${settings.liveEveryHours === 1 ? "" : "s"}${settings.historyWeekly ? ", plus a weekly past-sales top-up" : ""}, and whenever you start one. `
               : "Scans only run when you start them (schedule off in Settings). "}
-            One scan at a time, at most {settings?.concurrency ?? 1} request{(settings?.concurrency ?? 1) === 1 ? "" : "s"} at once with starts at least {(settings?.concurrency ?? 1) > 1 ? "0.3" : "1.2"} s apart, dropping to one at a time when number8.bid is slow, and stopping if it asks.
+            One scan at a time, at most {settings?.concurrency ?? 1} request{(settings?.concurrency ?? 1) === 1 ? "" : "s"} at once with starts at least {(settings?.concurrency ?? 1) > 1 ? "0.3" : "1.2"} s apart, dropping to one at a time when number8.bid is slow (back up after 20 quick replies), and stopping if it asks.
           </p>
         </div>
       </div>

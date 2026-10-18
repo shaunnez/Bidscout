@@ -212,3 +212,46 @@ test("after a 429, the retry waits for requests still in flight and goes one at 
   assert.equal(startedWith[2], 0, "the retry started alone");
   assert.equal(t.parallelism, 1);
 });
+
+test("after a slow-down, quick replies climb back one request at a time, up to the setting", async () => {
+  const replies = Array.from({ length: 80 }, () => json({ ok: 1 }));
+  let clock = 0;
+  let slow = true;
+  const t = new Number8Transport({
+    baseUrl: "https://example.test", concurrency: 3, jitterMs: 0, random: () => 0, now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    fetch: async () => {
+      if (slow) clock += 4000; // one reply took 4 s
+      slow = false;
+      clock += 500;
+      return replies.shift()!();
+    },
+  });
+  await t.get("/api/first");
+  assert.equal(t.parallelism, 1, "a slow reply drops to one");
+  for (let i = 0; i < 19; i++) await t.get(`/api/q${i}`);
+  assert.equal(t.parallelism, 1, "19 quick replies aren't enough");
+  await t.get("/api/q19");
+  assert.equal(t.parallelism, 2, "20 in a row add one");
+  for (let i = 0; i < 40; i++) await t.get(`/api/r${i}`);
+  assert.equal(t.parallelism, 3, "never above the setting");
+});
+
+test("a quick challenge page doesn't count towards climbing back", async () => {
+  let clock = 0;
+  let n = 0;
+  const t = new Number8Transport({
+    baseUrl: "https://example.test", concurrency: 2, jitterMs: 0, random: () => 0, now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    fetch: async () => {
+      n++;
+      clock += n === 1 ? 4500 : 500;
+      if (n === 21) return new Response("<!doctype html><title>Checking your browser</title>", { headers: { "content-type": "text/html" } });
+      return json({ ok: 1 })();
+    },
+  });
+  for (let i = 0; i < 20; i++) await t.get(`/api/q${i}`); // one slow, then 19 quick
+  assert.equal(t.parallelism, 1);
+  await assert.rejects(t.get("/api/challenge"), StopRunError);
+  assert.equal(t.parallelism, 1, "the challenge page was the 20th quick reply but doesn't raise the limit");
+});

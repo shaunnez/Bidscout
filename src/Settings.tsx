@@ -57,7 +57,7 @@ export function Settings({ me }: { me: Me }) {
               {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </label>
-          <p className="muted small">Starts stay at least 0.3 s apart, and a scan drops to one request at a time if number8.bid slows down or asks us to back off.</p>
+          <p className="muted small">Starts stay at least 0.3 s apart, and a scan drops to one request at a time if number8.bid slows down or asks us to back off, and climbs back after 20 quick replies in a row.</p>
         </section>
       )}
       {tm && (
