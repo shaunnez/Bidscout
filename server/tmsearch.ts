@@ -255,19 +255,22 @@ export interface ProbeReport {
   status: number | null;
   ms: number;
   cards: number;
-  sample: Array<Pick<CardItem, "title" | "price" | "price_kind" | "url">>;
+  /** Cards a price was read from. */
+  priced: number;
+  /** The first few listings' links (their values aren't shown: nothing here is stored to cite). */
+  listingUrls: string[];
   /** The start of the page's text when no listings were found, to see what came back instead. */
   pageStart: string;
 }
 
 /**
  * One results page through one searcher, reported for an admin and not stored: whether it came
- * back, how many listing cards it held, and the first few as parsed.
+ * back, how many listing cards it held and how many a price was read from.
  */
 export async function probeSearcher(s: TradeMeSearcher, query: string, now = () => Date.now()): Promise<ProbeReport> {
   const url = searchUrl(query);
   const started = now();
-  const base = { method: s.name, query, url, status: null, cards: 0, sample: [], pageStart: "" };
+  const base = { method: s.name, query, url, status: null, cards: 0, priced: 0, listingUrls: [], pageStart: "" };
   let page: SearchPage;
   try {
     page = await s.search(url);
@@ -279,12 +282,16 @@ export async function probeSearcher(s: TradeMeSearcher, query: string, now = () 
     status: page.status,
     ms: now() - started,
     cards: page.cards.length,
-    sample: page.cards.slice(0, 5).map(parseCard).map((c) => ({ title: c.title, price: c.price, price_kind: c.price_kind, url: c.url })),
+    priced: page.cards.map(parseCard).filter((c) => c.price != null).length,
+    listingUrls: page.cards.slice(0, 5).map((c) => c.url),
     pageStart: page.cards.length ? "" : stripContacts(tidy(page.text)).slice(0, 400),
   };
   try {
     checkPage(page);
-    return { ...report, verdict: page.cards.length ? "ok" : "no-results", message: page.cards.length ? `Read ${page.cards.length} listings from Trade Me's results page.` : "Trade Me said there were no results." };
+    if (!page.cards.length) return { ...report, verdict: "no-results", message: "Trade Me said there were no results." };
+    // Listings without prices aren't usable, so that isn't "works".
+    if (!report.priced) return { ...report, verdict: "failed", message: `Found ${page.cards.length} listings but read no prices from them.` };
+    return { ...report, verdict: "ok", message: `Found ${page.cards.length} listings and read a price from ${report.priced}.` };
   } catch (e) {
     return { ...report, verdict: e instanceof TradeMeBlocked ? "blocked" : "failed", message: (e as Error).message };
   }

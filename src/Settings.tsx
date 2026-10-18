@@ -84,7 +84,7 @@ export function Settings({ me }: { me: Me }) {
           {me.is_admin && tm.parallelKeySet && (
             <div className="probe">
               <h4>Test Parallel</h4>
-              <p className="muted small">Reads one Trade Me results page through Parallel (from Parallel's servers) and shows what came back. Nothing is stored, and the button above doesn't use Parallel yet.</p>
+              <p className="muted small">Reads one Trade Me results page through Parallel (from Parallel's servers) and says whether listings and prices came back. Nothing is stored, and the button above doesn't use Parallel yet.</p>
               <div className="probe-row">
                 <input value={probeQuery} onChange={(e) => setProbeQuery(e.target.value)} placeholder="Search words" aria-label="Search words" />
                 <button disabled={probe.busy || !probeQuery.trim()} onClick={runProbe}>{probe.busy ? "Testing… (up to a minute)" : "Test"}</button>
@@ -96,9 +96,10 @@ export function Settings({ me }: { me: Me }) {
                     <strong>{probe.report.verdict === "ok" ? "Works" : probe.report.verdict === "no-results" ? "Works (no results)" : probe.report.verdict === "blocked" ? "Blocked" : "Didn't work"}</strong>
                     {" "}· {probe.report.message} · {probe.report.status ? `HTTP ${probe.report.status} · ` : ""}{(probe.report.ms / 1000).toFixed(1)} s
                   </p>
-                  {probe.report.sample.length > 0 && (
-                    <ul>{probe.report.sample.map((c) => <li key={c.url}><a href={c.url} target="_blank" rel="noreferrer">{c.title ?? c.url}</a>{c.price != null ? ` · $${c.price}${c.price_kind ? ` (${c.price_kind.replace("_", " ")})` : ""}` : " · no price read"}</li>)}</ul>
-                  )}
+                  <p>
+                    <a href={probe.report.url} target="_blank" rel="noreferrer">Open the same results page on Trade Me</a> to compare
+                    {probe.report.listingUrls.length > 0 && <> · listings found: {probe.report.listingUrls.map((u, i) => <a key={u} href={u} target="_blank" rel="noreferrer">{i ? ", " : ""}{i + 1}</a>)}</>}
+                  </p>
                   {probe.report.pageStart && <p className="muted">Page started: “{probe.report.pageStart}”</p>}
                 </div>
               )}

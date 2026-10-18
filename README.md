@@ -56,7 +56,7 @@ The repo has a `Dockerfile` and `railway.toml`. Shaun runs the deploy himself (`
    - `BIDSCOUT_PASSWORD`: the password of the first admin, user `admin` (or `BIDSCOUT_ADMIN_USERNAME`), created on first start. After that, people and passwords are managed in Settings.
    - `BIDSCOUT_CONTACT`: the email sent to number 8 solutions in the User-Agent.
    - `FIRECRAWL_API_KEY` (optional): Trade Me searches go through Firecrawl first, and pasted listing links need it. Without it, the image's Chromium runs Trade Me searches. `FIRECRAWL_API_URL` points at a self-hosted Firecrawl instead.
-   - `PARALLEL_API_KEY` (optional): turns on an admin-only "Test Parallel" button in Settings that reads one Trade Me results page through Parallel's Extract API and shows what came back (nothing stored). The Trade Me button doesn't use Parallel yet.
+   - `PARALLEL_API_KEY` (optional): turns on an admin-only "Test Parallel" button in Settings that reads one Trade Me results page through Parallel's Extract API and reports how many listings and prices came back, with links to compare (nothing stored). The Trade Me button doesn't use Parallel yet.
 4. Under the service's Networking settings, generate a public domain.
 5. Deploy: connect the repo so every push to `main` deploys, or run `railway up` from this folder. The health check is `/api/health`. The schema is applied at start.
 

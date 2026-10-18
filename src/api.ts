@@ -361,7 +361,8 @@ export interface ProbeReport {
   status: number | null;
   ms: number;
   cards: number;
-  sample: Array<{ title: string | null; price: number | null; price_kind: string | null; url: string }>;
+  priced: number;
+  listingUrls: string[];
   pageStart: string;
 }
 

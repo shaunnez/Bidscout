@@ -88,7 +88,10 @@ test("Parallel: asks for the whole page fresh, and its cards are read like Firec
   assert.equal((seen[0]!.init.headers as Record<string, string>)["x-api-key"], "k");
   const body = JSON.parse(String(seen[0]!.init.body));
   assert.deepEqual([body.urls, body.advanced_settings.full_content, body.advanced_settings.fetch_policy.disable_cache_fallback], [[searchUrl("t480")], true, true]);
-  assert.deepEqual([r.method, r.verdict, r.cards, r.sample[0]!.price, r.sample[0]!.price_kind], ["parallel", "ok", 2, 350, "buy_now"]);
+  assert.deepEqual([r.method, r.verdict, r.cards, r.priced, r.listingUrls], ["parallel", "ok", 2, 2, [`${TM}/11`, `${TM}/12`]]);
+  const noPrices = parallelWith(200, { extract_id: "x", results: [{ url: "u", full_content: `Showing 1 results\n[Lenovo ThinkPad T480](${TM}/13)` }], errors: [] });
+  const n = await probeSearcher(parallelSearcher(noPrices), "t480");
+  assert.deepEqual([n.verdict, n.cards, n.priced], ["failed", 1, 0], "listings without prices aren't reported as working");
 });
 
 test("Parallel: Trade Me's refusal is reported as blocked; an empty page shows how it started", async () => {
