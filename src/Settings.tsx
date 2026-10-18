@@ -85,7 +85,7 @@ export function Settings({ me }: { me: Me }) {
             <div className="probe">
               <h4>Automatic prices</h4>
               <p className="muted small">
-                Looks up every open IT lot the way the button would, through Parallel only, about 5 searches a second.
+                Looks up every open IT lot the way the button would, through Parallel only, about 2 searches a second.
                 Lots that need the same search share one answer, and answers are kept for 3 days, then refreshed while the lot is
                 still open. New lots are picked up after each scan. If Trade Me refuses Parallel, or lookups keep failing, it turns
                 itself off and says why here.

@@ -13,11 +13,11 @@ import { autoStatus, CACHE_DAYS, LookupError, searchKey, tradeMeLookup, type Loo
  */
 
 /**
- * Five lookups start a second, up to 100 running at once (each takes 10-30 s). Parallel allows
- * 600 Extract requests a minute and a lookup reads one or two pages, so this stays near that.
+ * Two lookups start a second, up to 100 running at once (each takes 10-30 s). Parallel allows
+ * 600 Extract requests a minute and a lookup reads one or two pages, so this stays well under.
  */
 export const AUTO_CONCURRENCY = 100;
-export const AUTO_GAP_MS = 200;
+export const AUTO_GAP_MS = 500;
 const MAX_FAILURES_IN_A_ROW = 5;
 /** Enough lots for a whole day's limit in one pass. */
 const BATCH = 1000;
