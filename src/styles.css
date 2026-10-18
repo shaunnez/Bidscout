@@ -412,3 +412,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .tm-paste { display: flex; flex-direction: column; gap: 6px; }
 .tm-paste summary { cursor: pointer; font-size: 13px; color: var(--ink-2); font-weight: 600; }
 .tm-paste textarea { font: inherit; font-size: 12.5px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; resize: vertical; margin: 6px 0; width: 100%; }
+.probe { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line, #e5e7eb); }
+.probe h4 { margin: 0 0 4px; }
+.probe-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.probe-row input { flex: 1 1 180px; min-width: 0; }
+.probe ul { padding-left: 18px; margin: 6px 0; }
+.probe li { overflow-wrap: anywhere; }

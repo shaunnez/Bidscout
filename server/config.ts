@@ -13,6 +13,8 @@ export interface Config {
   firecrawlKey: string;
   /** Firecrawl's API address; set FIRECRAWL_API_URL for a self-hosted Firecrawl. */
   firecrawlUrl: string;
+  /** Parallel API key; only the admin's "Test Parallel" button uses it so far. */
+  parallelKey: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -32,6 +34,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     baseUrl: "https://www.number8.bid",
     firecrawlKey: get("FIRECRAWL_API_KEY") ?? "",
     firecrawlUrl: get("FIRECRAWL_API_URL") ?? "https://api.firecrawl.dev/v2",
+    parallelKey: get("PARALLEL_API_KEY") ?? "",
   };
 }
 

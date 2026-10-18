@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { account, type AdminUser, type Me, type ScanSettings, type SettingsResponse } from "./api.ts";
+import { account, type AdminUser, type Me, type ProbeReport, type ScanSettings, type SettingsResponse } from "./api.ts";
 import { nzDate } from "./format.ts";
 
 export function Settings({ me }: { me: Me }) {
   const [scan, setScan] = useState<ScanSettings | null>(null);
   const [hours, setHours] = useState<number[]>([]);
-  const [tm, setTm] = useState<Pick<SettingsResponse, "trademe" | "trademeLimitOptions" | "trademeKeySet"> | null>(null);
+  const [tm, setTm] = useState<Pick<SettingsResponse, "trademe" | "trademeLimitOptions" | "trademeKeySet" | "parallelKeySet"> | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [probeQuery, setProbeQuery] = useState("thinkpad t480");
+  const [probe, setProbe] = useState<{ busy: boolean; report: ProbeReport | null; error: string | null }>({ busy: false, report: null, error: null });
   const [nu, setNu] = useState({ username: "", display_name: "", password: "", is_admin: false });
 
   const load = () => {
@@ -23,6 +25,14 @@ export function Settings({ me }: { me: Me }) {
       load();
     } catch (e) {
       setMsg({ ok: false, text: (e as Error).message });
+    }
+  };
+  const runProbe = async () => {
+    setProbe({ busy: true, report: null, error: null });
+    try {
+      setProbe({ busy: false, report: await account.probeParallel(probeQuery), error: null });
+    } catch (e) {
+      setProbe({ busy: false, report: null, error: (e as Error).message });
     }
   };
   const saveScan = (patch: Partial<ScanSettings>) => run(() => account.saveSettings(patch), "Scan settings saved.");
@@ -71,6 +81,29 @@ export function Settings({ me }: { me: Me }) {
             </select>
           </label>
           <p className="muted small">Pasting listing links (reading those listing pages) needs a Firecrawl key. Trade Me's terms still apply; ask them if you plan to use it a lot.</p>
+          {me.is_admin && tm.parallelKeySet && (
+            <div className="probe">
+              <h4>Test Parallel</h4>
+              <p className="muted small">Reads one Trade Me results page through Parallel (from Parallel's servers) and shows what came back. Nothing is stored, and the button above doesn't use Parallel yet.</p>
+              <div className="probe-row">
+                <input value={probeQuery} onChange={(e) => setProbeQuery(e.target.value)} placeholder="Search words" aria-label="Search words" />
+                <button disabled={probe.busy || !probeQuery.trim()} onClick={runProbe}>{probe.busy ? "Testing… (up to a minute)" : "Test"}</button>
+              </div>
+              {probe.error && <p className="warn small">{probe.error}</p>}
+              {probe.report && (
+                <div className="small">
+                  <p className={probe.report.verdict === "ok" || probe.report.verdict === "no-results" ? "ok" : "warn"}>
+                    <strong>{probe.report.verdict === "ok" ? "Works" : probe.report.verdict === "no-results" ? "Works (no results)" : probe.report.verdict === "blocked" ? "Blocked" : "Didn't work"}</strong>
+                    {" "}· {probe.report.message} · {probe.report.status ? `HTTP ${probe.report.status} · ` : ""}{(probe.report.ms / 1000).toFixed(1)} s
+                  </p>
+                  {probe.report.sample.length > 0 && (
+                    <ul>{probe.report.sample.map((c) => <li key={c.url}><a href={c.url} target="_blank" rel="noreferrer">{c.title ?? c.url}</a>{c.price != null ? ` · $${c.price}${c.price_kind ? ` (${c.price_kind.replace("_", " ")})` : ""}` : " · no price read"}</li>)}</ul>
+                  )}
+                  {probe.report.pageStart && <p className="muted">Page started: “{probe.report.pageStart}”</p>}
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
       {me.is_admin && (

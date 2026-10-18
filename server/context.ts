@@ -3,6 +3,7 @@ import { connect, migrate } from "./db.ts";
 import { ObjectStore } from "./store.ts";
 import { ImageFetcher } from "./images.ts";
 import { Firecrawl } from "./firecrawl.ts";
+import { Parallel } from "./parallel.ts";
 import { chromiumSearcher, findChromium, firecrawlSearcher, type TradeMeSearcher } from "./tmsearch.ts";
 import { robotsLoader } from "./trademe.ts";
 import { Number8Transport, RequestGate } from "./transport.ts";
@@ -30,5 +31,7 @@ export async function appContext() {
   // Trade Me's own search: through Firecrawl when there's a key, else (or if that fails) a local Chromium.
   const chromiumPath = findChromium();
   const tradeMeSearchers: TradeMeSearcher[] = [...(firecrawl ? [firecrawlSearcher(firecrawl)] : []), ...(chromiumPath ? [chromiumSearcher(chromiumPath)] : [])];
-  return { config, db, store, makeTransport, makeImageFetcher, firecrawl, tradeMeRobots, tradeMeSearchers };
+  // Not a searcher yet: only the admin's "Test Parallel" button uses it.
+  const parallel = config.parallelKey ? new Parallel(config.parallelKey) : null;
+  return { config, db, store, makeTransport, makeImageFetcher, firecrawl, tradeMeRobots, tradeMeSearchers, parallel };
 }

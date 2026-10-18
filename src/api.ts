@@ -348,6 +348,21 @@ export interface SettingsResponse {
   trademe: TradeMeSettings;
   trademeLimitOptions: number[];
   trademeKeySet: boolean;
+  parallelKeySet: boolean;
+}
+
+/** One Trade Me results page read through Parallel, for the admin's test; not stored. */
+export interface ProbeReport {
+  method: string;
+  query: string;
+  url: string;
+  verdict: "ok" | "no-results" | "blocked" | "failed";
+  message: string;
+  status: number | null;
+  ms: number;
+  cards: number;
+  sample: Array<{ title: string | null; price: number | null; price_kind: string | null; url: string }>;
+  pageStart: string;
 }
 
 export const account = {
@@ -363,5 +378,6 @@ export const account = {
   deleteUser: (id: number) => call(`/api/admin/users/${id}`, { method: "DELETE" }),
   settings: () => call<SettingsResponse>(`/api/settings`),
   saveSettings: (scan: Partial<ScanSettings>) => call<{ scan: ScanSettings; trademe: TradeMeSettings }>(`/api/settings`, { method: "PUT", body: JSON.stringify({ scan }) }),
+  probeParallel: (query: string) => call<ProbeReport>(`/api/admin/trademe/probe`, { method: "POST", body: JSON.stringify({ query }) }),
   saveTradeMe: (trademe: Partial<TradeMeSettings>) => call<{ scan: ScanSettings; trademe: TradeMeSettings }>(`/api/settings`, { method: "PUT", body: JSON.stringify({ trademe }) }),
 };

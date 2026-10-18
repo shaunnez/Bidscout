@@ -17,6 +17,7 @@ import { photoSummary } from "./photo-summary.ts";
 import { refreshLot } from "./scan/refresh.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
 import { getScanSettings, getTradeMeSettings, LIVE_HOURS, saveScanSettings, saveTradeMeSettings, TRADEME_LIMITS } from "./settings.ts";
+import { parallelSearcher, probeSearcher } from "./tmsearch.ts";
 import { failInterruptedLookups, latestForLot, loadLookup, LookupError, tradeMeLookup, tradeMeStatus } from "./trademe.ts";
 import { LOT_COLUMNS, LOT_JOINS, parseQuery, searchLots } from "./search.ts";
 import { loadSnapshotDoc } from "./snapshots.ts";
@@ -190,8 +191,22 @@ app.delete<{ Params: { id: string } }>("/api/admin/users/:id", { preHandler: req
 
 app.get("/api/settings", async () => ({
   scan: await getScanSettings(db), liveHourOptions: LIVE_HOURS,
-  trademe: await getTradeMeSettings(db), trademeLimitOptions: TRADEME_LIMITS, trademeKeySet: !!ctx.firecrawl || ctx.tradeMeSearchers.length > 0, trademeMethods: ctx.tradeMeSearchers.map((x) => x.name),
+  trademe: await getTradeMeSettings(db), trademeLimitOptions: TRADEME_LIMITS, trademeKeySet: !!ctx.firecrawl || ctx.tradeMeSearchers.length > 0, trademeMethods: ctx.tradeMeSearchers.map((x) => x.name), parallelKeySet: !!ctx.parallel,
 }));
+
+// An admin's test of reading one Trade Me results page through Parallel. Nothing is stored.
+let probing = false;
+app.post<{ Body: { query?: string } }>("/api/admin/trademe/probe", { preHandler: requireAdmin }, async (req, reply) => {
+  if (!ctx.parallel) return reply.code(503).send({ error: "Set PARALLEL_API_KEY in Railway's variables first." });
+  if (probing) return reply.code(409).send({ error: "A test is already running." });
+  const query = String(req.body?.query ?? "").replace(/\s+/g, " ").trim().slice(0, 120) || "thinkpad t480";
+  probing = true;
+  try {
+    return await probeSearcher(parallelSearcher(ctx.parallel), query);
+  } finally {
+    probing = false;
+  }
+});
 
 app.put<{ Body: { scan?: Record<string, unknown>; trademe?: Record<string, unknown> } }>("/api/settings", { preHandler: requireAdmin }, async (req) => ({
   scan: req.body?.scan ? await saveScanSettings(db, req.body.scan as never, uid(req)) : await getScanSettings(db),
