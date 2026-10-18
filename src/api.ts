@@ -355,8 +355,17 @@ export interface SettingsResponse {
   trademeKeySet: boolean;
   parallelKeySet: boolean;
   autoLimitOptions: number[];
-  /** Open IT lots, how many have a Trade Me answer under 3 days old, and today's automatic lookups. */
-  autoProgress: { openLots: number; priced: number; used: number; dailyLimit: number };
+  autoProgress: AutoProgress;
+}
+
+/** Automatic Trade Me prices: open IT lots priced, today's lookups, those running now and the latest ten. */
+export interface AutoProgress {
+  openLots: number;
+  priced: number;
+  used: number;
+  dailyLimit: number;
+  running: number;
+  recent: Array<{ id: number; lot_id: number | null; lot_title: string | null; query: string; status: "ok" | "failed" | "running"; found: number; error: string | null; created_at: string }>;
 }
 
 /** One Trade Me results page read through Parallel, for the admin's test; not stored. */
@@ -387,6 +396,7 @@ export const account = {
   deleteUser: (id: number) => call(`/api/admin/users/${id}`, { method: "DELETE" }),
   settings: () => call<SettingsResponse>(`/api/settings`),
   saveSettings: (scan: Partial<ScanSettings>) => call<{ scan: ScanSettings; trademe: TradeMeSettings }>(`/api/settings`, { method: "PUT", body: JSON.stringify({ scan }) }),
+  autoPrices: () => call<AutoProgress & { enabled: boolean; stopped: { reason: string; at: string } | null }>(`/api/trademe/auto`),
   probeParallel: (query: string) => call<ProbeReport>(`/api/admin/trademe/probe`, { method: "POST", body: JSON.stringify({ query }) }),
   saveTradeMe: (trademe: Partial<TradeMeSettings>) => call<{ scan: ScanSettings; trademe: TradeMeSettings }>(`/api/settings`, { method: "PUT", body: JSON.stringify({ trademe }) }),
 };

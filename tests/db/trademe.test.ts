@@ -341,6 +341,9 @@ test("Automatic prices: open IT lots only, one search per shared query, own dail
   assert.equal((await tradeMeStatus(db, { firecrawl: null, searchers: [parallel] })).used, buttonUsed, "automatic lookups don't use up the button's daily limit");
   const p = await autoProgress(db);
   assert.deepEqual([p.openLots, p.priced, p.used, p.dailyLimit], [3, 3, 2, 100]);
+  assert.equal(p.running, 0);
+  assert.deepEqual(p.recent.map((l: { query: string; status: string; found: number }) => [l.query, l.status, l.found > 0]).sort(),
+    [["Dell Latitude 5420", "ok", true], ["HP EliteDesk 800 G4", "ok", true]], "the latest automatic lookups, for Settings");
 
   searched.length = 0;
   assert.equal((await autoPriceTick(deps)).looked, 0);

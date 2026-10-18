@@ -105,7 +105,7 @@ export function Scans({ scan, openLot }: { scan: { run: ScanRun | null; active: 
   );
 }
 
-function Bar({ label, done, total }: { label: string; done: number; total: number | null }) {
+export function Bar({ label, done, total }: { label: string; done: number; total: number | null }) {
   const pct = total ? Math.min(100, (done / total) * 100) : 0;
   return (
     <div className="bar">

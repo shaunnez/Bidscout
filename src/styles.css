@@ -418,3 +418,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .probe-row input { flex: 1 1 180px; min-width: 0; }
 .probe ul { padding-left: 18px; margin: 6px 0; }
 .probe li { overflow-wrap: anywhere; }
+.auto-progress { margin: 8px 0; }
+.auto-progress .bar-label { color: var(--muted); }
+.auto-progress .bar-track { background: var(--line); }
+.auto-progress p.ok { display: inline-block; margin: 6px 0; }
+.auto-recent { padding-left: 18px; margin: 6px 0; }
+.auto-recent li { overflow-wrap: anywhere; margin: 2px 0; }

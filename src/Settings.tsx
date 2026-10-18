@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { account, type AdminUser, type Me, type ProbeReport, type ScanSettings, type SettingsResponse } from "./api.ts";
-import { nzDate } from "./format.ts";
+import { account, type AdminUser, type AutoProgress, type Me, type ProbeReport, type ScanSettings, type SettingsResponse } from "./api.ts";
+import { ago, nzDate } from "./format.ts";
+import { Bar } from "./Scans.tsx";
 
 export function Settings({ me }: { me: Me }) {
   const [scan, setScan] = useState<ScanSettings | null>(null);
@@ -100,10 +101,7 @@ export function Settings({ me }: { me: Me }) {
                   {tm.autoLimitOptions.map((n) => <option key={n} value={n}>{n}</option>)}
                 </select>
               </label>
-              <p className="muted small">
-                {tm.autoProgress.priced} of {tm.autoProgress.openLots} open IT lots have Trade Me prices · {tm.autoProgress.used} of {tm.autoProgress.dailyLimit} automatic lookups used in the last 24 hours.
-                {" "}Each lookup reads one or two pages through Parallel (about $0.001 a page).
-              </p>
+              <AutoPrices initial={tm.autoProgress} />
               {tm.trademe.autoStopped && <p className="warn small">Stopped {nzDate(tm.trademe.autoStopped.at)}: {tm.trademe.autoStopped.reason}</p>}
             </div>
           )}
@@ -171,6 +169,47 @@ export function Settings({ me }: { me: Me }) {
             <button className="primary" disabled={!nu.username || nu.password.length < 8}>Add</button>
           </form>
         </section>
+      )}
+    </div>
+  );
+}
+
+/** Automatic prices as they happen: progress, what's running, and the latest lookups (refreshed every 3 s). */
+function AutoPrices({ initial }: { initial: AutoProgress }) {
+  const [p, setP] = useState<AutoProgress & { enabled?: boolean }>(initial);
+  useEffect(() => {
+    let live = true;
+    const tick = () => account.autoPrices().then((r) => live && setP(r)).catch(() => {});
+    tick();
+    const t = setInterval(tick, 3000);
+    return () => { live = false; clearInterval(t); };
+  }, []);
+  const status = p.running > 0 ? `Looking up now: ${p.running} running`
+    : p.enabled === false ? "Off"
+    : p.used >= p.dailyLimit ? "Today's automatic lookups are used up; more tomorrow"
+    : p.priced >= p.openLots ? "Up to date. New lots are looked up after each scan"
+    : "Waiting for the next pass (about once a minute)";
+  return (
+    <div className="auto-progress">
+      <Bar label="Open IT lots with Trade Me prices" done={p.priced} total={p.openLots || null} />
+      <p className={`small ${p.running ? "ok" : "muted"}`}>{status}</p>
+      <p className="muted small">
+        {p.used} of {p.dailyLimit} automatic lookups used in the last 24 hours. Each reads one or two pages through Parallel (about $0.001 a page).
+      </p>
+      {p.recent.length > 0 && (
+        <details>
+          <summary className="small">Latest lookups</summary>
+          <ul className="auto-recent small">
+            {p.recent.map((l) => (
+              <li key={l.id} className={l.status === "failed" ? "warn" : ""}>
+                <span className="muted">{ago(l.created_at)}</span>{" "}
+                {l.lot_id ? <a href={`#/settings?lot=${l.lot_id}`}>{l.query}</a> : l.query}
+                {" · "}
+                {l.status === "running" ? "running…" : l.status === "ok" ? `${l.found} listing${l.found === 1 ? "" : "s"}` : l.error ?? "failed"}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </div>
   );
