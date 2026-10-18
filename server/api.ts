@@ -16,7 +16,8 @@ import { getAuction, listAuctions } from "./auctions.ts";
 import { photoSummary } from "./photo-summary.ts";
 import { refreshLot } from "./scan/refresh.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
-import { getScanSettings, getTradeMeSettings, LIVE_HOURS, saveScanSettings, saveTradeMeSettings, TRADEME_LIMITS } from "./settings.ts";
+import { getScanSettings, getTradeMeSettings, LIVE_HOURS, saveScanSettings, saveTradeMeSettings, TRADEME_AUTO_LIMITS, TRADEME_LIMITS } from "./settings.ts";
+import { autoProgress } from "./autoprice.ts";
 import { parallelSearcher, probeSearcher } from "./tmsearch.ts";
 import { failInterruptedLookups, latestForLot, loadLookup, LookupError, tradeMeLookup, tradeMeStatus } from "./trademe.ts";
 import { LOT_COLUMNS, LOT_JOINS, parseQuery, searchLots } from "./search.ts";
@@ -192,6 +193,7 @@ app.delete<{ Params: { id: string } }>("/api/admin/users/:id", { preHandler: req
 app.get("/api/settings", async () => ({
   scan: await getScanSettings(db), liveHourOptions: LIVE_HOURS,
   trademe: await getTradeMeSettings(db), trademeLimitOptions: TRADEME_LIMITS, trademeKeySet: !!ctx.firecrawl || ctx.tradeMeSearchers.length > 0, trademeMethods: ctx.tradeMeSearchers.map((x) => x.name), parallelKeySet: !!ctx.parallel,
+  autoLimitOptions: TRADEME_AUTO_LIMITS, autoProgress: await autoProgress(db),
 }));
 
 // An admin's test of reading one Trade Me results page through Parallel. Nothing is stored.

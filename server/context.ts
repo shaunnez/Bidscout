@@ -4,7 +4,7 @@ import { ObjectStore } from "./store.ts";
 import { ImageFetcher } from "./images.ts";
 import { Firecrawl } from "./firecrawl.ts";
 import { Parallel } from "./parallel.ts";
-import { chromiumSearcher, findChromium, firecrawlSearcher, type TradeMeSearcher } from "./tmsearch.ts";
+import { chromiumSearcher, findChromium, firecrawlSearcher, parallelSearcher, type TradeMeSearcher } from "./tmsearch.ts";
 import { robotsLoader } from "./trademe.ts";
 import { Number8Transport, RequestGate } from "./transport.ts";
 
@@ -28,10 +28,13 @@ export async function appContext() {
     new ImageFetcher({ userAgent: `BidScout/0.1 (lot photo reading${config.contact ? `; contact ${config.contact}` : ""})` });
   const firecrawl = config.firecrawlKey ? new Firecrawl(config.firecrawlKey, { base: config.firecrawlUrl }) : null;
   const tradeMeRobots = robotsLoader();
-  // Trade Me's own search: through Firecrawl when there's a key, else (or if that fails) a local Chromium.
-  const chromiumPath = findChromium();
-  const tradeMeSearchers: TradeMeSearcher[] = [...(firecrawl ? [firecrawlSearcher(firecrawl)] : []), ...(chromiumPath ? [chromiumSearcher(chromiumPath)] : [])];
-  // Not a searcher yet: only the admin's "Test Parallel" button uses it.
   const parallel = config.parallelKey ? new Parallel(config.parallelKey) : null;
+  // Trade Me's own search, tried in order: Parallel, Firecrawl, then (if those fail or aren't set) a local Chromium.
+  const chromiumPath = findChromium();
+  const tradeMeSearchers: TradeMeSearcher[] = [
+    ...(parallel ? [parallelSearcher(parallel)] : []),
+    ...(firecrawl ? [firecrawlSearcher(firecrawl)] : []),
+    ...(chromiumPath ? [chromiumSearcher(chromiumPath)] : []),
+  ];
   return { config, db, store, makeTransport, makeImageFetcher, firecrawl, tradeMeRobots, tradeMeSearchers, parallel };
 }

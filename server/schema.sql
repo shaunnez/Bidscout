@@ -449,3 +449,5 @@ ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS method text;
 ALTER TABLE price_lookup_items ADD COLUMN IF NOT EXISTS reserve text;
 -- The results page a search card's quote came from (url is the listing itself).
 ALTER TABLE price_lookup_items ADD COLUMN IF NOT EXISTS source_url text;
+-- 'button' (someone pressed it) or 'auto' (server/autoprice.ts); each has its own daily limit.
+ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'button';

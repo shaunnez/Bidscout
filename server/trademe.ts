@@ -184,14 +184,22 @@ export async function loadLookup(db: Db, id: number) {
   return { ...l, items };
 }
 
-/** Is the button usable right now, and if not, why not. Every lookup in the last 24 hours counts, failed or running. */
+/** Is the button usable right now, and if not, why not. Every button lookup in the last 24 hours counts, failed or running. */
 export async function tradeMeStatus(db: Pick<Db, "query">, ways: { firecrawl: FirecrawlClient | null; searchers?: TradeMeSearcher[] }) {
   const s = await getTradeMeSettings(db as Db);
-  const used = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE source='trademe' AND created_at > now() - interval '24 hours'`)).rows[0].n);
+  const used = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE source='trademe' AND origin='button' AND created_at > now() - interval '24 hours'`)).rows[0].n);
   const ready = !!ways.firecrawl || !!ways.searchers?.length;
   const reason = !ready ? "Needs Chromium (in the Docker image) or a Firecrawl API key (FIRECRAWL_API_KEY)." : !s.enabled ? "An admin can turn Trade Me prices on in Settings." : used >= s.dailyLimit ? `The group's ${s.dailyLimit} lookups for the last 24 hours are used up.` : null;
   // Pasted listing pages are read through Firecrawl only.
   return { available: !reason, reason, used, dailyLimit: s.dailyLimit, pasteLinks: !reason && !!ways.firecrawl };
+}
+
+/** May an automatic lookup start now (server/autoprice.ts), and if not, why not. */
+export async function autoStatus(db: Pick<Db, "query">) {
+  const s = await getTradeMeSettings(db as Db);
+  const used = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE source='trademe' AND origin='auto' AND created_at > now() - interval '24 hours'`)).rows[0].n);
+  const reason = !s.enabled ? "Trade Me prices are off." : !s.autoEnabled ? "Automatic lookups are off." : used >= s.autoDailyLimit ? `The ${s.autoDailyLimit} automatic lookups for the last 24 hours are used up.` : null;
+  return { available: !reason, reason, used, dailyLimit: s.autoDailyLimit };
 }
 
 /** The newest successful lookup this lot ran or reused. */
@@ -238,7 +246,7 @@ type Plan = { kind: "search"; query: string; deviceType: string | null; lotTitle
  * Runs (or reuses) a Trade Me lookup: a web search for `query`, or the listing pages in `links`
  * (pasted by the person from their own Trade Me search, when web search doesn't find them).
  */
-export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | null; userId: number; query?: string; links?: string[]; background?: boolean }): Promise<any> {
+export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | null; userId: number | null; query?: string; links?: string[]; background?: boolean; auto?: boolean }): Promise<any> {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -302,14 +310,14 @@ export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | n
  * Takes one of the group's daily lookups: under a lock, so two people starting different
  * searches at once can't both pass the limit. The row stays 'running' until the answer is saved.
  */
-async function reserve(deps: LookupDeps, input: { lotId: number | null; userId: number }, query: string, key: string, now: () => Date) {
+async function reserve(deps: LookupDeps, input: { lotId: number | null; userId: number | null; auto?: boolean }, query: string, key: string, now: () => Date) {
   return tx(deps.db, async (c) => {
     await c.query(`SELECT pg_advisory_xact_lock(hashtext('bidscout:trademe-limit'))`);
-    const status = await tradeMeStatus(c, deps);
+    const status = input.auto ? await autoStatus(c) : await tradeMeStatus(c, deps);
     if (!status.available) throw new LookupError(status.reason!, deps.firecrawl || deps.searchers?.length ? 403 : 503);
     const r = await c.query(
-      `INSERT INTO price_lookups (source, query, query_key, lot_id, requested_by, status, created_at) VALUES ('trademe',$1,$2,$3,$4,'running',$5) RETURNING id`,
-      [query, key, input.lotId, input.userId, now()],
+      `INSERT INTO price_lookups (source, query, query_key, lot_id, requested_by, status, created_at, origin) VALUES ('trademe',$1,$2,$3,$4,'running',$5,$6) RETURNING id`,
+      [query, key, input.lotId, input.userId, now(), input.auto ? "auto" : "button"],
     );
     return Number(r.rows[0].id);
   });
@@ -377,6 +385,7 @@ async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number)
   let method = plan.kind === "links" ? "links" : "web-search";
   const queries: string[] = [];
   let error: string | null = null;
+  let refused: TradeMeBlocked | null = null;
   try {
     let done = false;
     if (plan.kind === "search" && deps.searchers?.length) {
@@ -445,6 +454,7 @@ async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number)
     }
   } catch (e) {
     error = (e as Error).message;
+    if (e instanceof TradeMeBlocked) refused = e;
   }
   // The answer becomes visible (status 'ok') in the same transaction that saves its listings.
   await tx(db, async (c) => {
@@ -461,5 +471,6 @@ async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number)
       [id, error ? "failed" : "ok", error, searched, items.length, credits || null, candidates, queries, blocked, method],
     );
   });
-  if (error) throw new LookupError(error, 502);
+  // A refusal stays a TradeMeBlocked, so automatic lookups know to stop.
+  if (error) throw refused ?? new LookupError(error, 502);
 }

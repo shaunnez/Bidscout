@@ -49,16 +49,31 @@ export async function saveScanSettings(db: Db, input: Partial<ScanSettings>, use
 /** Trade Me price lookups (server/trademe.ts): off until an admin turns them on. */
 export interface TradeMeSettings {
   enabled: boolean;
-  /** Lookups the whole group may run in 24 hours (cached answers don't count). */
+  /** Button lookups the whole group may run in 24 hours (cached answers don't count). */
   dailyLimit: number;
+  /** Look up every open IT lot automatically, through Parallel only (server/autoprice.ts). */
+  autoEnabled: boolean;
+  /** Automatic lookups in 24 hours, on top of the button's. */
+  autoDailyLimit: number;
+  /** Why automatic lookups last turned themselves off (e.g. Trade Me refused), and when. */
+  autoStopped: { reason: string; at: string } | null;
 }
 
 export const TRADEME_LIMITS = [10, 20, 50];
-export const DEFAULT_TRADEME_SETTINGS: TradeMeSettings = { enabled: false, dailyLimit: 20 };
+export const TRADEME_AUTO_LIMITS = [50, 100, 200, 500];
+export const DEFAULT_TRADEME_SETTINGS: TradeMeSettings = { enabled: false, dailyLimit: 20, autoEnabled: false, autoDailyLimit: 100, autoStopped: null };
 
 export function cleanTradeMeSettings(input: Partial<TradeMeSettings> | null | undefined): TradeMeSettings {
   const v = { ...DEFAULT_TRADEME_SETTINGS, ...(input ?? {}) };
-  return { enabled: !!v.enabled, dailyLimit: TRADEME_LIMITS.includes(Number(v.dailyLimit)) ? Number(v.dailyLimit) : DEFAULT_TRADEME_SETTINGS.dailyLimit };
+  const stopped = v.autoStopped && typeof v.autoStopped.reason === "string" ? { reason: v.autoStopped.reason.slice(0, 300), at: String(v.autoStopped.at) } : null;
+  return {
+    enabled: !!v.enabled,
+    dailyLimit: TRADEME_LIMITS.includes(Number(v.dailyLimit)) ? Number(v.dailyLimit) : DEFAULT_TRADEME_SETTINGS.dailyLimit,
+    autoEnabled: !!v.autoEnabled,
+    autoDailyLimit: TRADEME_AUTO_LIMITS.includes(Number(v.autoDailyLimit)) ? Number(v.autoDailyLimit) : DEFAULT_TRADEME_SETTINGS.autoDailyLimit,
+    // Turning automatic lookups back on clears the old reason.
+    autoStopped: v.autoEnabled ? null : stopped,
+  };
 }
 
 export async function getTradeMeSettings(db: Db): Promise<TradeMeSettings> {

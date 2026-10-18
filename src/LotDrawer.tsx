@@ -537,6 +537,7 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
   const live = priced.filter((i) => !isSold(i) && i.status === "open").map((i) => Number(i.price));
   const where = res?.method === "trademe-search:chromium" ? "Trade Me's results page, read by BidScout's browser"
     : res?.method === "trademe-search:firecrawl" ? "Trade Me's results page, read through Firecrawl"
+    : res?.method === "trademe-search:parallel" ? "Trade Me's results page, read through Parallel"
     : "the listing page, read through Firecrawl";
   const cite = (i: TradeMeItem, buyNow = false) =>
     onCite({

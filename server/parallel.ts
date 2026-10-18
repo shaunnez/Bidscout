@@ -1,7 +1,7 @@
 /**
  * A small client for Parallel's Extract API (https://docs.parallel.ai, POST /v1/extract): one
- * page as markdown, fetched from Parallel's servers, not ours. Used only by the admin's
- * "Test Parallel" button for now, to see whether it can read Trade Me's results pages.
+ * page as markdown, fetched from Parallel's servers, not ours. Reads Trade Me's results pages for
+ * the Trade Me prices button (first, before Firecrawl and Chromium) and for automatic prices.
  */
 
 export interface ExtractResult {
