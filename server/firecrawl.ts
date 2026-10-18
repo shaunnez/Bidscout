@@ -20,6 +20,8 @@ export interface ScrapeResult {
 export interface FirecrawlClient {
   search(query: string, opts: { limit: number; includeDomains: string[]; country: string }): Promise<{ results: SearchResult[]; credits: number | null }>;
   scrape(url: string, opts: { schema: Record<string, unknown>; prompt: string; maxAgeMs: number }): Promise<ScrapeResult & { credits: number | null }>;
+  /** A whole page as markdown, no extraction (e.g. a Trade Me results page). */
+  page(url: string, opts: { maxAgeMs: number }): Promise<{ markdown: string; statusCode: number | null; credits: number | null }>;
 }
 
 export class FirecrawlError extends Error {
@@ -67,6 +69,12 @@ export class Firecrawl implements FirecrawlClient {
       results: web.filter((w) => typeof w.url === "string").map((w) => ({ url: String(w.url), title: (w.title as string) ?? null, description: (w.description as string) ?? null })),
       credits: typeof r.creditsUsed === "number" ? r.creditsUsed : null,
     };
+  }
+
+  async page(url: string, opts: { maxAgeMs: number }) {
+    const r = await this.post("/scrape", { url, formats: ["markdown"], onlyMainContent: false, maxAge: opts.maxAgeMs, location: { country: "NZ", languages: ["en-NZ"] }, timeout: 60_000 });
+    const d = (r.data ?? {}) as Record<string, any>;
+    return { markdown: String(d.markdown ?? ""), statusCode: typeof d.metadata?.statusCode === "number" ? d.metadata.statusCode : null, credits: typeof r.creditsUsed === "number" ? r.creditsUsed : null };
   }
 
   async scrape(url: string, opts: { schema: Record<string, unknown>; prompt: string; maxAgeMs: number }) {

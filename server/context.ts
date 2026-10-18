@@ -3,6 +3,7 @@ import { connect, migrate } from "./db.ts";
 import { ObjectStore } from "./store.ts";
 import { ImageFetcher } from "./images.ts";
 import { Firecrawl } from "./firecrawl.ts";
+import { chromiumSearcher, findChromium, firecrawlSearcher, type TradeMeSearcher } from "./tmsearch.ts";
 import { robotsLoader } from "./trademe.ts";
 import { Number8Transport, RequestGate } from "./transport.ts";
 
@@ -26,5 +27,8 @@ export async function appContext() {
     new ImageFetcher({ userAgent: `BidScout/0.1 (lot photo reading${config.contact ? `; contact ${config.contact}` : ""})` });
   const firecrawl = config.firecrawlKey ? new Firecrawl(config.firecrawlKey, { base: config.firecrawlUrl }) : null;
   const tradeMeRobots = robotsLoader();
-  return { config, db, store, makeTransport, makeImageFetcher, firecrawl, tradeMeRobots };
+  // Trade Me's own search: through Firecrawl when there's a key, else (or if that fails) a local Chromium.
+  const chromiumPath = findChromium();
+  const tradeMeSearchers: TradeMeSearcher[] = [...(firecrawl ? [firecrawlSearcher(firecrawl)] : []), ...(chromiumPath ? [chromiumSearcher(chromiumPath)] : [])];
+  return { config, db, store, makeTransport, makeImageFetcher, firecrawl, tradeMeRobots, tradeMeSearchers };
 }
