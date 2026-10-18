@@ -37,7 +37,11 @@ export async function lotsToPrice(db: Pick<Db, "query">, limit = BATCH) {
   return r.rows;
 }
 
-/** For Settings: open IT lots, how many have a current answer, and today's automatic lookups. */
+/**
+ * For Settings, read live: open IT lots and how many have a current answer, today's automatic
+ * lookups, how many are running now, and the latest ten (all from the database, so it works
+ * whichever process runs the loop).
+ */
 export async function autoProgress(db: Pick<Db, "query">) {
   const r = await db.query(
     `SELECT count(*) AS open,
@@ -47,7 +51,13 @@ export async function autoProgress(db: Pick<Db, "query">) {
     [CACHE_DAYS],
   );
   const s = await autoStatus(db);
-  return { openLots: Number(r.rows[0].open), priced: Number(r.rows[0].priced), used: s.used, dailyLimit: s.dailyLimit };
+  const running = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE origin='auto' AND status='running'`)).rows[0].n);
+  const recent = (await db.query(
+    `SELECT pl.id, pl.lot_id, pl.query, pl.status, pl.found, left(pl.error, 200) AS error, pl.created_at, l.title AS lot_title
+     FROM price_lookups pl LEFT JOIN lots l ON l.id = pl.lot_id
+     WHERE pl.origin = 'auto' ORDER BY pl.id DESC LIMIT 10`,
+  )).rows;
+  return { openLots: Number(r.rows[0].open), priced: Number(r.rows[0].priced), used: s.used, dailyLimit: s.dailyLimit, running, recent };
 }
 
 export interface AutoDeps {
