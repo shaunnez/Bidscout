@@ -59,7 +59,7 @@ export interface TradeMeSettings {
   autoStopped: { reason: string; at: string } | null;
 }
 
-export const TRADEME_LIMITS = [10, 20, 50];
+export const TRADEME_LIMITS = [10, 20, 50, 100, 250, 500, 1000];
 export const TRADEME_AUTO_LIMITS = [100, 250, 500, 1000];
 export const DEFAULT_TRADEME_SETTINGS: TradeMeSettings = { enabled: false, dailyLimit: 20, autoEnabled: false, autoDailyLimit: 1000, autoStopped: null };
 
