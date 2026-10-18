@@ -83,6 +83,10 @@ export function extractPhotoValues(text: string, words: OcrWord[]): PhotoValue[]
   return out;
 }
 
+/** Photo values usable for merging: the current OCR version only. $1 is the lot. */
+export const CURRENT_PHOTO_VALUES = `SELECT pv.field, pv.value, pv.num, pv.confidence FROM photo_values pv
+  JOIN photo_reads pr ON pr.id = pv.photo_read_id WHERE pv.lot_id = $1 AND pr.ocr_version = '${OCR_VERSION}'`;
+
 export interface StoredPhotoValue {
   field: string;
   value: string;

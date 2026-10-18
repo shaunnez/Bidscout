@@ -11,6 +11,7 @@ import {
 } from "./auth.ts";
 import { isLoopback } from "./config.ts";
 import { appContext } from "./context.ts";
+import { MIN_PHOTO_CONFIDENCE, OCR_VERSION } from "../shared/specs/photo.ts";
 import { getAuction, listAuctions } from "./auctions.ts";
 import { refreshLot } from "./scan/refresh.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
@@ -247,8 +248,9 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
     ),
     db.query(
       `SELECT pv.id, pv.field, pv.value, pv.quote, pv.confidence, pr.image_url FROM photo_values pv
-       JOIN photo_reads pr ON pr.id = pv.photo_read_id WHERE pv.lot_id=$1 ORDER BY pv.confidence DESC`,
-      [id],
+       JOIN photo_reads pr ON pr.id = pv.photo_read_id
+       WHERE pv.lot_id=$1 AND pr.ocr_version=$2 AND pv.confidence >= $3 ORDER BY pv.confidence DESC`,
+      [id, OCR_VERSION, MIN_PHOTO_CONFIDENCE],
     ),
   ]);
   const suffix = lot.major_fault ? "|fault" : "";

@@ -254,12 +254,43 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   assert.deepEqual(pv.map((r) => [r.field, r.quote]), [["ramGb", "Memory Size 32768 MB"], ["storage", "1TB SSD"]]);
   assert.ok(pv[0].boxes.length >= 3);
   assert.ok(!(await lotsNeedingPhotos(db, 10)).includes(502), "read once");
+  await db.query(`UPDATE lots SET photo_ocr_version='old-ocr' WHERE id=502`);
+  assert.ok((await lotsNeedingPhotos(db, 10)).includes(502), "specs that came from photos are read again by a new OCR version");
+  await db.query(`UPDATE lots SET photo_ocr_version=$1 WHERE id=502`, [(await import("../../shared/specs/photo.ts")).OCR_VERSION]);
   await assert.rejects(db.query(`UPDATE photo_values SET quote='x'`), /immutable/);
   // A replay keeps what was read from photos and doesn't queue the lot again.
   await replayAll(db, store);
   assert.equal((await db.query(`SELECT count(*)::int AS n FROM photo_values WHERE lot_id=502`)).rows[0].n, 2);
   assert.ok((await db.query(`SELECT photo_ocr_at FROM lots WHERE id=502`)).rows[0].photo_ocr_at);
   assert.ok(!(await lotsNeedingPhotos(db, 10)).includes(502));
+
+  // A new OCR version queues the lot again; old-version values no longer count.
+  await db.query(`UPDATE lots SET photo_ocr_version='old-ocr', status='open', ram_gb=NULL WHERE id=502`);
+  assert.ok((await lotsNeedingPhotos(db, 10)).includes(502));
+  await db.query(`UPDATE lots SET images='["https://cdn.test/p2.jpg","https://cdn.test/p3.jpg","https://cdn.test/p4.jpg"]' WHERE id=502`);
+  const photosBefore = (await db.query(`SELECT count(*)::int AS n FROM photo_reads`)).rows[0].n;
+  // Photo 2 can't be fetched for now, photo 3 is corrupt, photo 4 shows a phone number.
+  const flaky = { get: async (u: string) => { if (u.endsWith("p2.jpg")) throw new Error("fetch failed"); return { body: Buffer.from(u), contentType: "image/jpeg" }; } };
+  const ocr = async (img: Buffer) => {
+    if (img.toString().endsWith("p3.jpg")) throw new Error("Input buffer contains unsupported image format");
+    return { text: "Call 021 234 5678 Memory Size 32768 MB", words, width: 400, height: 300 };
+  };
+  assert.equal(await readLotPhotos(db, store, flaky, 502, 3, clock, ocr), 0, "a bad photo doesn't stop the run");
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM photo_reads`)).rows[0].n, photosBefore, "the photo with contact details is not stored");
+  assert.ok((await lotsNeedingPhotos(db, 10)).includes(502), "photo 2 may work next time, so the lot stays queued");
+  const permanent = { get: async () => { throw new Error("HTTP 404 for x"); } };
+  await readLotPhotos(db, store, permanent, 502, 3, clock, ocr);
+  assert.ok(!(await lotsNeedingPhotos(db, 10)).includes(502), "photos that are gone don't keep the lot queued");
+
+  // After an upgrade that changes the parser, the worker re-parses stored listings (no requests).
+  const { reparseStale } = await import("../../server/scan/reparse.ts");
+  await db.query(`UPDATE lots SET parser_version='specs-old' WHERE id IN (501, 502)`);
+  const requestsBeforeReparse = transport.stats.requests;
+  assert.equal(await reparseStale(db), 2);
+  assert.equal(await reparseStale(db), 0);
+  assert.equal(transport.stats.requests, requestsBeforeReparse);
+  const { PARSER_VERSION } = await import("../../shared/specs/computer.ts");
+  assert.deepEqual((await db.query(`SELECT DISTINCT parser_version FROM lots`)).rows.map((r) => r.parser_version), [PARSER_VERSION]);
 
   // Evidence rows cannot be edited.
   await assert.rejects(db.query(`UPDATE spec_values SET quote='x'`), /immutable/);

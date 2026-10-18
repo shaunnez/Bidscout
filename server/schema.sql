@@ -373,3 +373,9 @@ ALTER TABLE auctions ADD COLUMN IF NOT EXISTS instructions text;
 ALTER TABLE auctions ADD COLUMN IF NOT EXISTS lots_close_at timestamptz;
 -- Titles stored before double-escaped entities were decoded.
 UPDATE auctions SET title = replace(replace(replace(title, '&#38;', '&'), '&#39;', ''''), '&amp;', '&') WHERE title ~ '&(#38|#39|amp);';
+
+-- Which OCR version last read a lot's photos; a new version queues them again.
+ALTER TABLE lots ADD COLUMN IF NOT EXISTS photo_ocr_version text;
+UPDATE lots l SET photo_ocr_version = r.v
+  FROM (SELECT DISTINCT ON (lot_id) lot_id, ocr_version AS v FROM photo_reads ORDER BY lot_id, id DESC) r
+  WHERE r.lot_id = l.id AND l.photo_ocr_version IS NULL;

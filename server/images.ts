@@ -6,6 +6,22 @@ export const N8_IMAGE_HOSTS = new Set(["d2mkoraxgm9izf.cloudfront.net"]);
 // image/mpo is the multi-picture JPEG some phone cameras produce; it decodes as a JPEG.
 const TYPES = /^image\/(jpeg|pjpeg|mpo|png|webp|gif)$/;
 
+const MAX_BYTES = 10 * 1024 * 1024;
+
+/** The body, refusing anything over 10 MB before or while it downloads. */
+async function readCapped(res: Response): Promise<Buffer> {
+  if (Number(res.headers.get("content-length") ?? 0) > MAX_BYTES) throw new Error("Image over 10 MB");
+  if (!res.body) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+    total += chunk.byteLength;
+    if (total > MAX_BYTES) throw new Error("Image over 10 MB");
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
 export interface FetchedImage {
   body: Buffer;
   contentType: string;
@@ -42,11 +58,9 @@ export class ImageFetcher {
         if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
         const contentType = (res.headers.get("content-type") ?? "").split(";")[0]!.trim();
         if (!TYPES.test(contentType)) throw new Error(`Not an image (${contentType})`);
-        const body = Buffer.from(await res.arrayBuffer());
-        if (body.length > 10 * 1024 * 1024) throw new Error("Image over 10 MB");
-        return { body, contentType };
+        return { body: await readCapped(res), contentType };
       } catch (e) {
-        if (attempt >= 3 || (e as Error).message.startsWith("HTTP 4") || (e as Error).message.startsWith("Not an image")) throw e;
+        if (attempt >= 3 || /^(HTTP 4|Not an image|Image over)/.test((e as Error).message)) throw e;
         await sleep(2000 * attempt);
       }
     }

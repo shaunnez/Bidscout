@@ -4,6 +4,7 @@ import { loadSnapshotDoc } from "../snapshots.ts";
 import type { ObjectStore } from "../store.ts";
 import { rebuildCompStats } from "./comps.ts";
 import { ingestLot, upsertAuction } from "./ingest.ts";
+import { OCR_VERSION } from "../../shared/specs/photo.ts";
 import { applyRefresh } from "./refresh.ts";
 import { recordDetail } from "./runner.ts";
 
@@ -60,7 +61,9 @@ export async function replayAll(db: Db, store: ObjectStore, onProgress?: (done: 
   // Who in the group is the high bidder can't be re-derived from redacted responses either.
   for (const f of fhigh) await db.query(`UPDATE lots SET friend_high_user_id=$2 WHERE id=$1`, [f.id, f.friend_high_user_id]);
   await db.query(
-    `UPDATE lots l SET photo_ocr_at = r.at FROM (SELECT lot_id, max(created_at) AS at FROM photo_reads GROUP BY lot_id) r WHERE r.lot_id = l.id`,
+    `UPDATE lots l SET photo_ocr_at = r.at, photo_ocr_version = $1
+     FROM (SELECT lot_id, max(created_at) AS at FROM photo_reads WHERE ocr_version = $1 GROUP BY lot_id) r WHERE r.lot_id = l.id`,
+    [OCR_VERSION],
   );
   await rebuildCompStats(db);
   return snaps.length;

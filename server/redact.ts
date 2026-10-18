@@ -27,6 +27,14 @@ const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 // NZ mobiles (02x) in the usual spacings, with or without +64.
 const MOBILE = /(?:\+?64[\s-]?|\b0)2\d[\s-]?\d{3}[\s-]?\d{3,5}\b/g;
 
+/** True if the text shows an email address or an NZ mobile number (used on text read from photos). */
+export function showsContact(text: string): boolean {
+  const found = EMAIL.test(text) || MOBILE.test(text);
+  EMAIL.lastIndex = 0;
+  MOBILE.lastIndex = 0;
+  return found;
+}
+
 export interface RedactResult {
   value: unknown;
   redactions: string[];

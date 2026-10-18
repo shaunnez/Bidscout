@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { cleanText } from "../../shared/clean.ts";
 import { looseKey, machineKey, PARSER_VERSION, parseComputer, titleKey, type ComputerSummary } from "../../shared/specs/computer.ts";
-import { mergePhotoValues } from "../../shared/specs/photo.ts";
+import { CURRENT_PHOTO_VALUES, mergePhotoValues } from "../../shared/specs/photo.ts";
 import { specScore } from "../../shared/specs/score.ts";
 import type { Tx } from "../db.ts";
 import { isoToDate, num, unixToDate, type N8Auction, type N8Lot } from "../number8.ts";
@@ -114,7 +114,7 @@ export async function parseRevision(c: Tx, lotId: number, revisionId: number, fi
     );
   }
   // Specs read from photos fill gaps the listing leaves (server/scan/photos.ts); keep them on re-parse.
-  const photo = (await c.query(`SELECT field, value, num, confidence FROM photo_values WHERE lot_id=$1`, [lotId])).rows;
+  const photo = (await c.query(CURRENT_PHOTO_VALUES, [lotId])).rows;
   if (photo.length) {
     const merged = mergePhotoValues(summary, photo);
     merged.summary.machineKey = machineKey(merged.summary);

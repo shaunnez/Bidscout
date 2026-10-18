@@ -79,3 +79,24 @@ test("tesseract TSV becomes words with offsets into the joined text", () => {
   assert.equal(r.text, "Model: T510\n16GB");
   for (const w of r.words) assert.equal(r.text.slice(w.start, w.end), w.text);
 });
+
+test("photo text showing an email or NZ mobile is flagged", async () => {
+  const { showsContact } = await import("../../server/redact.ts");
+  assert.equal(showsContact("Asset tag 80000737 i5-8350U 16GB RAM"), false);
+  assert.equal(showsContact("Owner: jo@example.co.nz"), true);
+  assert.equal(showsContact("Call 021 234 5678"), true);
+  assert.equal(showsContact("Call 021 234 5678"), true, "no regex state carried over");
+});
+
+test("image downloads are capped at 10 MB, by header or while streaming", async () => {
+  const { ImageFetcher } = await import("../../server/images.ts");
+  const url = "https://d2mkoraxgm9izf.cloudfront.net/x.jpg";
+  const big = new ImageFetcher({ sleep: async () => {}, fetch: async () => new Response("x", { headers: { "content-type": "image/jpeg", "content-length": String(11 * 1024 * 1024) } }) });
+  await assert.rejects(big.get(url), /over 10 MB/);
+  const chunk = new Uint8Array(1024 * 1024);
+  const stream = new ReadableStream({ start(c) { for (let i = 0; i < 11; i++) c.enqueue(chunk); c.close(); } });
+  const streamed = new ImageFetcher({ sleep: async () => {}, fetch: async () => new Response(stream, { headers: { "content-type": "image/jpeg" } }) });
+  await assert.rejects(streamed.get(url), /over 10 MB/);
+  const ok = new ImageFetcher({ sleep: async () => {}, fetch: async () => new Response(new Uint8Array(10), { headers: { "content-type": "image/jpeg" } }) });
+  assert.equal((await ok.get(url)).body.length, 10);
+});
