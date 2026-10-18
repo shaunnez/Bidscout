@@ -57,7 +57,12 @@ export async function autoProgress(db: Pick<Db, "query">) {
      FROM price_lookups pl LEFT JOIN lots l ON l.id = pl.lot_id
      WHERE pl.origin = 'auto' ORDER BY pl.id DESC LIMIT 10`,
   )).rows;
-  return { openLots: Number(r.rows[0].open), priced: Number(r.rows[0].priced), used: s.used, dailyLimit: s.dailyLimit, running, recent };
+  // The limit is a rolling 24 hours: when it's reached, more are allowed as the oldest one passes 24 hours.
+  const oldest = s.used >= s.dailyLimit
+    ? (await db.query(`SELECT min(created_at) AS at FROM price_lookups WHERE source='trademe' AND origin='auto' AND created_at > now() - interval '24 hours'`)).rows[0].at
+    : null;
+  const resumesAt = oldest ? new Date(new Date(oldest).getTime() + 86_400_000).toISOString() : null;
+  return { openLots: Number(r.rows[0].open), priced: Number(r.rows[0].priced), used: s.used, dailyLimit: s.dailyLimit, running, recent, resumesAt };
 }
 
 export interface AutoDeps {

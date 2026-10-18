@@ -199,7 +199,7 @@ app.get("/api/settings", async () => ({
 // Automatic Trade Me prices, for Settings to show live.
 app.get("/api/trademe/auto", async () => {
   const s = await getTradeMeSettings(db);
-  return { enabled: s.enabled && s.autoEnabled, stopped: s.autoStopped, ...(await autoProgress(db)) };
+  return { enabled: s.enabled && s.autoEnabled, autoEnabled: s.autoEnabled, stopped: s.autoStopped, ...(await autoProgress(db)) };
 });
 
 // An admin's test of reading one Trade Me results page through Parallel. Nothing is stored.

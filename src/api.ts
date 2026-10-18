@@ -374,6 +374,8 @@ export interface AutoProgress {
   used: number;
   dailyLimit: number;
   running: number;
+  /** When the daily limit is reached: when the oldest of the last 24 hours' lookups ages out. */
+  resumesAt: string | null;
   recent: Array<{ id: number; lot_id: number | null; lot_title: string | null; query: string; status: "ok" | "failed" | "running"; found: number; error: string | null; created_at: string }>;
 }
 
@@ -405,7 +407,7 @@ export const account = {
   deleteUser: (id: number) => call(`/api/admin/users/${id}`, { method: "DELETE" }),
   settings: () => call<SettingsResponse>(`/api/settings`),
   saveSettings: (scan: Partial<ScanSettings>) => call<{ scan: ScanSettings; trademe: TradeMeSettings }>(`/api/settings`, { method: "PUT", body: JSON.stringify({ scan }) }),
-  autoPrices: () => call<AutoProgress & { enabled: boolean; stopped: { reason: string; at: string } | null }>(`/api/trademe/auto`),
+  autoPrices: () => call<AutoProgress & { enabled: boolean; autoEnabled: boolean; stopped: { reason: string; at: string } | null }>(`/api/trademe/auto`),
   probeParallel: (query: string) => call<ProbeReport>(`/api/admin/trademe/probe`, { method: "POST", body: JSON.stringify({ query }) }),
   saveTradeMe: (trademe: Partial<TradeMeSettings>) => call<{ scan: ScanSettings; trademe: TradeMeSettings }>(`/api/settings`, { method: "PUT", body: JSON.stringify({ trademe }) }),
 };

@@ -343,8 +343,17 @@ test("Automatic prices: open IT lots only, one search per shared query, own dail
   const p = await autoProgress(db);
   assert.deepEqual([p.openLots, p.priced, p.used, p.dailyLimit], [3, 3, 2, 100]);
   assert.equal(p.running, 0);
+  assert.equal(p.resumesAt, null, "under the limit");
   assert.deepEqual(p.recent.map((l: { query: string; status: string; found: number }) => [l.query, l.status, l.found > 0]).sort(),
     [["Dell Latitude 5420", "ok", true], ["HP EliteDesk 800 G4", "ok", true]], "the latest automatic lookups, for Settings");
+
+  // At the limit, it says when the rolling 24 hours lets more through: when the oldest ages out.
+  await db.query(`INSERT INTO price_lookups (source, query, query_key, status, origin, created_at)
+                  SELECT 'trademe', 'filler', 'filler' || g, 'ok', 'auto', now() - interval '20 hours' + g * interval '1 second' FROM generate_series(1, 98) g`);
+  const full = await autoProgress(db);
+  const oldest = (await db.query(`SELECT min(created_at) AS at FROM price_lookups WHERE origin='auto' AND created_at > now() - interval '24 hours'`)).rows[0].at;
+  assert.equal(full.resumesAt, new Date(new Date(oldest).getTime() + 86_400_000).toISOString());
+  await db.query(`DELETE FROM price_lookups WHERE query = 'filler'`);
 
   searched.length = 0;
   assert.equal((await autoPriceTick(deps)).looked, 0);

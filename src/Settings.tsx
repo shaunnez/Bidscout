@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { account, type AdminUser, type AutoProgress, type Me, type ProbeReport, type ScanSettings, type SettingsResponse } from "./api.ts";
 import { ago, nzDate } from "./format.ts";
 import { Bar } from "./Scans.tsx";
@@ -101,8 +101,13 @@ export function Settings({ me }: { me: Me }) {
                   {tm.autoLimitOptions.map((n) => <option key={n} value={n}>{n}</option>)}
                 </select>
               </label>
-              <AutoPrices initial={tm.autoProgress} />
-              {tm.trademe.autoStopped && <p className="warn small">Stopped {nzDate(tm.trademe.autoStopped.at)}: {tm.trademe.autoStopped.reason}</p>}
+              <AutoPrices
+                initial={tm.autoProgress}
+                stopped={tm.trademe.autoStopped}
+                // The loop can turn itself off while this page is open: keep the checkbox and reason in step.
+                onState={(autoEnabled, autoStopped) => setTm((t) => t && (t.trademe.autoEnabled !== autoEnabled || t.trademe.autoStopped?.at !== autoStopped?.at)
+                  ? { ...t, trademe: { ...t.trademe, autoEnabled, autoStopped } } : t)}
+              />
             </div>
           )}
           {me.is_admin && tm.parallelKeySet && (
@@ -175,24 +180,35 @@ export function Settings({ me }: { me: Me }) {
 }
 
 /** Automatic prices as they happen: progress, what's running, and the latest lookups (refreshed every 3 s). */
-function AutoPrices({ initial }: { initial: AutoProgress }) {
+function AutoPrices({ initial, stopped, onState }: {
+  initial: AutoProgress;
+  stopped: { reason: string; at: string } | null;
+  onState: (autoEnabled: boolean, stopped: { reason: string; at: string } | null) => void;
+}) {
   const [p, setP] = useState<AutoProgress & { enabled?: boolean }>(initial);
+  const report = useRef(onState);
+  report.current = onState;
   useEffect(() => {
     let live = true;
-    const tick = () => account.autoPrices().then((r) => live && setP(r)).catch(() => {});
+    const tick = () => account.autoPrices().then((r) => {
+      if (!live) return;
+      setP(r);
+      report.current(r.autoEnabled, r.stopped);
+    }).catch(() => {});
     tick();
     const t = setInterval(tick, 3000);
     return () => { live = false; clearInterval(t); };
   }, []);
   const status = p.running > 0 ? `Looking up now: ${p.running} running`
     : p.enabled === false ? "Off"
-    : p.used >= p.dailyLimit ? "Today's automatic lookups are used up; more tomorrow"
+    : p.used >= p.dailyLimit ? `The ${p.dailyLimit} lookups for the last 24 hours are used up${p.resumesAt ? `; more from ${nzDate(p.resumesAt)}` : ""}`
     : p.priced >= p.openLots ? "Up to date. New lots are looked up after each scan"
     : "Waiting for the next pass (about once a minute)";
   return (
     <div className="auto-progress">
       <Bar label="Open IT lots with Trade Me prices" done={p.priced} total={p.openLots || null} />
       <p className={`small ${p.running ? "ok" : "muted"}`}>{status}</p>
+      {stopped && <p className="warn small">Stopped {nzDate(stopped.at)}: {stopped.reason}</p>}
       <p className="muted small">
         {p.used} of {p.dailyLimit} automatic lookups used in the last 24 hours. Each reads one or two pages through Parallel (about $0.001 a page).
       </p>
