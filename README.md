@@ -40,12 +40,14 @@ The first live scan takes 10–20 minutes, because it opens every lot page once.
 
 The repo has a `Dockerfile` and `railway.toml`. Shaun runs the deploy himself (`railway up`). One service runs the API, the UI and the scan worker; scans still start only when someone presses Scan now.
 
-1. In a new Railway project, add **PostgreSQL**. The service picks up its `DATABASE_URL`.
+1. In a new Railway project, add **PostgreSQL**. BidScout does not see it until you add the `DATABASE_URL` reference below.
 2. Add a **volume** to the BidScout service mounted at `/data`, where the stored responses go. Without it, they are lost on every deploy and the citations break.
-3. Set these variables on the service:
+3. Set these variables on the service, and only these (don't copy `.env.example`: its local `BIDSCOUT_HOST`, `BIDSCOUT_DATA_DIR` and database settings break hosting):
+   - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`: a reference to the Postgres service.
    - `BIDSCOUT_PASSWORD`: required. The server refuses to listen publicly without it, and the browser asks for it (any username).
    - `BIDSCOUT_CONTACT`: the email sent to number 8 solutions in the User-Agent.
-4. From this folder, run `railway up`. The health check is `/api/health`. The schema is applied at start.
+4. Under the service's Networking settings, generate a public domain.
+5. Deploy: connect the repo so every push to `main` deploys, or run `railway up` from this folder. The health check is `/api/health`. The schema is applied at start.
 
 Keep `numReplicas = 1`: the worker runs inside the one instance, and only one scan may run at a time.
 

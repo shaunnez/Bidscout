@@ -31,3 +31,12 @@ test("hosted password gate: Basic auth with any username, constant-time compare"
   assert.equal(passwordAccepted(basic("a", "pass:with:colons"), "pass:with:colons"), true);
   assert.equal(passwordAccepted("Bearer s3cret", "s3cret"), false);
 });
+
+test("config: empty variables count as unset, so Railway's DATABASE_URL and PORT are used", async () => {
+  const { loadConfig } = await import("../../server/config.ts");
+  const c = loadConfig({ BIDSCOUT_DATABASE_URL: "", DATABASE_URL: "postgres://u:p@db.internal:5432/x", BIDSCOUT_HOST: " ", PORT: "8080", BIDSCOUT_API_PORT: "" });
+  assert.equal(c.databaseUrl, "postgres://u:p@db.internal:5432/x");
+  assert.equal(c.host, "127.0.0.1");
+  assert.equal(c.apiPort, 8080);
+  assert.equal(loadConfig({ BIDSCOUT_MIN_INTERVAL_MS: "200" }).minIntervalMs, 1000);
+});
