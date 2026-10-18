@@ -132,3 +132,47 @@ test("Trade Me prices: off until enabled, reads only robots-allowed listings, co
   assert.equal((await tradeMeLookup(deps, { lotId: 501, userId: user, query: "thinkpad t14" })).cached, true, "saved answers still work at the limit");
   await db.end();
 });
+
+test("Trade Me prices: a wider second search when the first finds nothing, and pasted listing links", async () => {
+  const db = connect(url);
+  await migrate(db);
+  const user = (await db.query(`INSERT INTO users (username, display_name, password_hash) VALUES ('tmuser2','TM2','x') RETURNING id`)).rows[0].id;
+  await db.query(`DELETE FROM price_lookup_lots`);
+  await db.query(`DELETE FROM price_lookup_items`);
+  await db.query(`DELETE FROM price_lookups`);
+  await saveTradeMeSettings(db, { enabled: true, dailyLimit: 50 }, user);
+  const calls: string[] = [];
+  const fc: FirecrawlClient = {
+    async search(q, o) {
+      calls.push(`search ${q} (${o.limit})`);
+      // The exact search turns up nothing from Trade Me; the shorter one finds a listing.
+      if (q.includes("i5-12500T")) return { results: [{ url: "https://www.pbtech.co.nz/x", title: null, description: null }], credits: 1 };
+      return { results: [{ url: `${TM}/listing/7`, title: null, description: null }], credits: 2 };
+    },
+    async scrape(u) {
+      calls.push(`scrape ${u}`);
+      return { markdown: "HP Elite Mini 600 G9\nBuy Now $899", json: { title: "HP Elite Mini 600 G9", status: "open", price: 899, price_kind: "buy_now" }, statusCode: 200, url: u, credits: 1 };
+    },
+  };
+  const deps = { db, firecrawl: fc, robots, sleep: async () => {} };
+  const r = await tradeMeLookup(deps, { lotId: 234340, userId: user, query: "HP Elite Mini 600 G9 i5-12500T" });
+  assert.deepEqual(r.queries, ["HP Elite Mini 600 G9 i5-12500T", "HP Elite Mini 600 G9"]);
+  assert.deepEqual(calls, ["search HP Elite Mini 600 G9 i5-12500T (10)", "search HP Elite Mini 600 G9 (20)", `scrape ${TM}/listing/7`]);
+  assert.equal(r.searched, 2);
+  assert.equal(r.candidates, 1);
+  assert.equal(r.items[0].verified, true);
+
+  // Pasted links: only marketplace listings, robots-checked, no search; the same links reuse the answer.
+  calls.length = 0;
+  await assert.rejects(tradeMeLookup(deps, { lotId: 234340, userId: user, links: ["https://www.trademe.co.nz/a/search?search_string=hp"] }), /marketplace listings/);
+  const pasted = await tradeMeLookup(deps, { lotId: 234340, userId: user, links: [
+    `${TM}/listing/8?rsqid=abc`, "https://www.pbtech.co.nz/x", `${TM}/listing/3`, `${TM}/listing/8`,
+  ] });
+  assert.deepEqual(calls, [`scrape ${TM}/listing/8`], "no search; listing 3 is disallowed by robots.txt; duplicates read once");
+  assert.equal(pasted.found, 1);
+  assert.equal(pasted.queries.length, 0);
+  assert.equal((await tradeMeLookup(deps, { lotId: 234341, userId: user, links: [`${TM}/listing/9`] })).cached, false, "a different set of links is a new lookup");
+  assert.equal((await tradeMeLookup(deps, { lotId: 234342, userId: user, links: [`${TM}/listing/3`, `${TM}/listing/8?x=1`] })).cached, true, "the same set, in any order, is reused");
+  await assert.rejects(tradeMeLookup(deps, { lotId: 234340, userId: user, links: [`${TM}/listing/3`] }), /robots\.txt doesn't allow/);
+  await db.end();
+});

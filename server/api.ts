@@ -284,12 +284,13 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
   };
 });
 
-/** Trade Me prices for a lot (server/trademe.ts): reuses an answer under 3 days old for the same search text. */
-app.post<{ Params: { id: string }; Body: { query?: string } }>("/api/lots/:id/trademe", async (req, reply) => {
+/** Trade Me prices for a lot (server/trademe.ts): a web search, or listing links the person pasted. Reuses answers under 3 days old. */
+app.post<{ Params: { id: string }; Body: { query?: string; links?: string[] } }>("/api/lots/:id/trademe", async (req, reply) => {
   try {
+    const links = Array.isArray(req.body?.links) ? req.body.links.slice(0, 20).map(String) : undefined;
     return await tradeMeLookup(
       { db, firecrawl: ctx.firecrawl, robots: ctx.tradeMeRobots },
-      { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? "") },
+      { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? ""), links },
     );
   } catch (e) {
     const status = e instanceof LookupError ? e.status : 502;

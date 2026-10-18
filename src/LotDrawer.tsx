@@ -482,17 +482,20 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [ranHere, setRanHere] = useState(0);
+  const [links, setLinks] = useState("");
+  const pasted = links.match(/https?:\/\/\S*trademe\.co\.nz\/\S*\/listing\/\d+\S*/gi) ?? [];
   useEffect(() => {
     setRes(state.latest);
     setErr(null);
     setRanHere(0);
   }, [lot.id, state.latest]);
-  const run = async () => {
+  const run = async (fromLinks = false) => {
     setBusy(true);
     setErr(null);
     try {
-      const r = await api.tradeMe(lot.id, query);
+      const r = fromLinks ? await api.tradeMeLinks(lot.id, pasted.slice(0, 5)) : await api.tradeMe(lot.id, query);
       setRes(r);
+      if (fromLinks) setLinks("");
       if (!r.cached) setRanHere((n) => n + 1);
     } catch (e) {
       setErr((e as Error).message);
@@ -515,18 +518,33 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
   return (
     <div className="tm">
       <div className="tm-head">
-        <button className="primary small-btn" onClick={run} disabled={busy || !query || (!state.available && !res)}>
+        <button className="primary small-btn" onClick={() => run()} disabled={busy || !query || (!state.available && !res)}>
           {busy ? "Reading Trade Me…" : res ? "Look again" : "Trade Me prices"}
         </button>
         <span className="muted small">{state.available ? `${state.used + ranHere} of ${state.dailyLimit} lookups used today · answers kept 3 days` : state.reason}</span>
       </div>
       {busy && <p className="muted small">Finding listings with a web search, then reading up to 5 of them one at a time. Usually 20–60 seconds.</p>}
       {err && <p className="err small">{err}</p>}
+      {(state.available || res) && (
+        <details className="tm-paste" open={!!res && res.found === 0}>
+          <summary>Found them on Trade Me yourself? Paste up to 5 listing links</summary>
+          <textarea value={links} onChange={(e) => setLinks(e.target.value)} rows={3} spellCheck={false}
+            placeholder="https://www.trademe.co.nz/a/marketplace/computers/…/listing/1234567890" />
+          <div className="tm-head">
+            <button className="ghost small-btn" disabled={busy || !pasted.length || !state.available} onClick={() => run(true)}>
+              Read {pasted.length ? Math.min(5, pasted.length) : ""} listing{pasted.length === 1 ? "" : "s"}
+            </button>
+            <span className="muted small">{pasted.length > 5 ? "Only the first 5 are read. " : ""}Counts as one lookup. Each page is checked against Trade Me's robots.txt first.</span>
+          </div>
+        </details>
+      )}
       {res && !busy && (
         <>
           <p className="tm-summary">
-            {priced.length === 0
-              ? <>No confirmed prices from {res.found} listing{res.found === 1 ? "" : "s"}{res.searched ? ` (${res.searched} search results)` : ""}.</>
+            {priced.length === 0 && res.found === 0 && res.queries?.length
+              ? <>Web search found {res.searched} result{res.searched === 1 ? "" : "s"}, {res.candidates ?? 0} of them Trade Me listings (searched {res.queries.map((q) => `“${q}”`).join(", then ")}). Web search doesn't see every Trade Me listing: open the Trade Me link above and paste the listings you want into the box above.</>
+              : priced.length === 0
+              ? <>No confirmed prices from {res.found} listing{res.found === 1 ? "" : "s"}.</>
               : <>
                   {sold.length > 0 && <>Sold <b>{money(Math.min(...sold))}{sold.length > 1 ? `–${money(Math.max(...sold))}` : ""}</b> ({sold.length}) · </>}
                   {live.length > 0 && <>On now <b>{money(Math.min(...live))}{live.length > 1 ? `–${money(Math.max(...live))}` : ""}</b>, median {money(median(live))} ({live.length})</>}
@@ -561,7 +579,7 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
             </div>
           )}
           <p className="footnote">
-            Web search for “{res.query}”, {nzDate(res.created_at)}{res.cached ? " (saved answer)" : ""}. Each price opens the words it came from on the listing.
+            {res.queries?.length ? <>Web search for {res.queries.map((q) => `“${q}”`).join(", then ")}</> : <>{res.query} (links you pasted)</>}, {nzDate(res.created_at)}{res.cached ? " (saved answer)" : ""}. Each price opens the words it came from on the listing.
             Greyed prices couldn't be found in the page text and aren't counted. Trade Me prices are asking or sold prices before any fees.
           </p>
         </>

@@ -133,3 +133,11 @@ test("a Buy Now price is kept only when it is written on the page, with its own 
   assert.equal(made.buy_now, null);
   assert.equal(made.buy_now_excerpt, null);
 });
+
+test("the wider search keeps make and model, drops CPU, memory and storage words", async () => {
+  const { broaderQuery } = await import("../../server/trademe.ts");
+  assert.equal(broaderQuery("HP Elite Mini 600 G9 i5-12500T"), "HP Elite Mini 600 G9");
+  assert.equal(broaderQuery("Lenovo ThinkPad T14 Gen 2 i5-1145G7"), "Lenovo ThinkPad T14 Gen 2");
+  assert.equal(broaderQuery("HP EliteBook 840 G5"), null, "nothing to drop: no second search");
+  assert.equal(broaderQuery("i5-12400 16GB 500GB SSD desktop"), null, "a clone's parts leave nothing to search for");
+});

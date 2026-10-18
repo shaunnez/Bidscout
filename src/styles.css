@@ -409,3 +409,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .photo-stats { grid-template-columns: repeat(5, 1fr); background: #fff; border: 1px solid var(--line); }
 .chip.used { background: #e0f7fa; color: #0e7490; }
 @media (max-width: 900px) { .photo-stats { grid-template-columns: repeat(3, 1fr); row-gap: 8px; } }
+.tm-paste { display: flex; flex-direction: column; gap: 6px; }
+.tm-paste summary { cursor: pointer; font-size: 13px; color: var(--ink-2); font-weight: 600; }
+.tm-paste textarea { font: inherit; font-size: 12.5px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; resize: vertical; margin: 6px 0; width: 100%; }
