@@ -39,6 +39,9 @@ const MODEL_TOKEN = /\b(?=[A-Z0-9./-]*\d)(?=[A-Z0-9./-]*[A-Z])[A-Z0-9][A-Z0-9./-
 /** Sizes, ratings and counts, not models: 400W, 12V, 2000VA, 100AH, 6X, L1480 (a length). */
 const NOT_MODEL = /^(?:\d+(?:\.\d+)?(?:W|KW|KWH|VA|KVA|V|VAC|VDC|A|AH|MAH|HZ|MM|CM|M|KG|L|GB|TB|MB|MP|IN|PCS|X)|\d+X\d+\S*|[A-Z]{1,2}\d{1,2}|[LWHD]\d{2,4}(?:MM)?)$/;
 
+/** A size, rating or count (400W, 18V, 2000VA, L1480), never a model number. */
+export const isRating = (word: string) => NOT_MODEL.test(word.toUpperCase());
+
 /** A product's model number: a labelled one ("Model – SHI2000-22") first, else a model-like code. */
 export function modelNumber(description: string, title = ""): string | null {
   const labelled = MODEL_LABEL.exec(description) ?? MODEL_LABEL.exec(title);
