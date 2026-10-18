@@ -9,8 +9,10 @@ Personal use, with permission from number 8 solutions (17 October 2026).
 - **Live deals:** every open lot, filterable by type (laptop, all-in-one, mini PC, workstation, server, tablet, monitor…), make, processor, Intel generation, RAM, storage, SSD, condition (no faults / no major faults), all-in price and closing time. Rows show the all-in price now (bid + buyer's premium + GST), bid count, a ticking time left, fault badges, and past final prices for the same or similar machine.
 - **Past sales:** closed lots with their final bids, the history the comparisons are built from.
 - **Lot drawer:** photos, a price breakdown where each part opens its source (bid, premium wording, GST wording), a details table where every value opens its quote, past sales of the same machine, bid movement seen across scans, and the listing text.
-- **Watchlist:** star a lot to keep it on one list.
-- **Scans:** start a live scan or a chunk of past sales, and watch real progress counts. Nothing runs on a schedule.
+- **Favourites:** each person stars their own lots; a lot shows who else in the group has favourited it.
+- **Friends:** each person adds their own number8 username and bidder number in Profile. A lot then shows when a friend is the high bidder or has bid, so you don't bid against each other. **Refresh now** on a lot re-reads it from number8.bid (one request) right before you bid.
+- **Scans:** live scans run every 4 hours (Settings; on by default when hosted), plus a weekly past-sales top-up; you can also start one by hand and watch real progress counts.
+- **Accounts:** usernames and passwords, created by an admin in Settings. No self sign-up.
 
 ## Running it
 
@@ -21,7 +23,7 @@ cp .env.example .env.local        # set BIDSCOUT_CONTACT to an email number 8 so
 createdb bidscout                 # or point BIDSCOUT_DATABASE_URL at any empty database
 npm install
 npm run setup:db
-npm run dev:api                   # API on :4328, scan worker runs inside it
+npm run dev:api                   # API on :4328, scan worker runs inside it; first run creates admin/bidscout
 npm run dev                       # UI on http://localhost:5188
 ```
 
@@ -44,7 +46,7 @@ The repo has a `Dockerfile` and `railway.toml`. Shaun runs the deploy himself (`
 2. Add a **volume** to the BidScout service mounted at `/data`, where the stored responses go. Without it, they are lost on every deploy and the citations break.
 3. Set these variables on the service, and only these (don't copy `.env.example`: its local `BIDSCOUT_HOST`, `BIDSCOUT_DATA_DIR` and database settings break hosting):
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`: a reference to the Postgres service.
-   - `BIDSCOUT_PASSWORD`: required. The server refuses to listen publicly without it, and the browser asks for it (any username).
+   - `BIDSCOUT_PASSWORD`: the password of the first admin, user `admin` (or `BIDSCOUT_ADMIN_USERNAME`), created on first start. After that, people and passwords are managed in Settings.
    - `BIDSCOUT_CONTACT`: the email sent to number 8 solutions in the User-Agent.
 4. Under the service's Networking settings, generate a public domain.
 5. Deploy: connect the repo so every push to `main` deploys, or run `railway up` from this folder. The health check is `/api/health`. The schema is applied at start.
@@ -53,8 +55,9 @@ Keep `numReplicas = 1`: the worker runs inside the one instance, and only one sc
 
 ## Scraping with consideration (`server/transport.ts`)
 
-- One scan at a time across the whole app (a unique index on active runs), with one request at a time.
-- At least 1.2 s between requests, plus up to 0.4 s of jitter. `BIDSCOUT_MIN_INTERVAL_MS` can raise the gap, but it can never go below 1 s.
+- One scan at a time across the whole app (a unique index on active runs).
+- Up to 4 requests in flight (Settings → Requests at a time, 1–4), with request starts at least 0.3 s apart. One at a time means at least 1.2 s between requests plus up to 0.4 s of jitter (`BIDSCOUT_MIN_INTERVAL_MS` can raise it, never below 1 s).
+- Any slow reply (over 3 s) or 429/503 drops the scan to one request at a time for the rest of the run.
 - After a reply that took over 3 s, the next gap is twice that reply's time (capped at 30 s).
 - Past sales are read 60 to a page, the largest page the site's own menu offers. A 200-row page took 17 s for their server.
 - **Retries:**

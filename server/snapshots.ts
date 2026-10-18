@@ -5,7 +5,10 @@ import type { FetchResult } from "./transport.ts";
 
 export interface Snapshot<T = unknown> {
   id: number;
+  /** The stored (redacted) document: what citations point into. */
   doc: T;
+  /** The response as received. Used only to match the group's own bidder IDs; never stored. */
+  raw: T;
 }
 
 /** Parses, redacts and stores a response. The stored (redacted) JSON is what citations point into. */
@@ -25,7 +28,7 @@ export async function saveSnapshot<T>(c: Db | Tx, store: ObjectStore, runId: num
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
     [runId, r.method, r.url, r.requestBody, r.status, r.elapsedMs, r.attempts, sha256(r.body), hash, ref, stored.length, JSON.stringify(redactions), at],
   );
-  return { id: row.rows[0].id, doc: value as T };
+  return { id: row.rows[0].id, doc: value as T, raw: parsed as T };
 }
 
 const cache = new Map<string, unknown>();

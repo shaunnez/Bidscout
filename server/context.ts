@@ -14,7 +14,7 @@ export async function appContext() {
   }
   const store = new ObjectStore(config.dataDir);
   store.checkWritable();
-  const makeTransport = (signal: AbortSignal) =>
-    new Number8Transport({ baseUrl: config.baseUrl, contact: config.contact, minIntervalMs: config.minIntervalMs, signal });
+  const makeTransport = (signal: AbortSignal, concurrency = 1) =>
+    new Number8Transport({ baseUrl: config.baseUrl, contact: config.contact, minIntervalMs: config.minIntervalMs, concurrency, signal });
   return { config, db, store, makeTransport };
 }

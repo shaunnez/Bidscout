@@ -2,8 +2,11 @@
  * The only way BidScout talks to number8.bid.
  *
  * Consideration rules:
- * - One request at a time, at least `minIntervalMs` apart (never under 1s) plus jitter.
- * - Slow responses slow us down: after a reply that took over 3s, the next gap is
+ * - At most `concurrency` requests in flight (1–4, a setting). With one, requests are at
+ *   least `minIntervalMs` apart (never under 1s) plus jitter; with more, request starts are
+ *   still spaced at least 300 ms apart.
+ * - Slow responses slow us down: after a reply that took over 3s, or any 429/503, the
+ *   transport drops to one request at a time for the rest of the scan, and the next gap is
  *   twice that reply's time (capped at 30s), so a busy server gets breathing room.
  * - Retries only for failures that can pass: network errors, timeouts, 408/425/5xx.
  *   Backoff 2s, 4s, 8s, 16s (+ jitter), at most `maxRetries` times.
@@ -51,6 +54,8 @@ export interface Transport {
   get(path: string): Promise<FetchResult>;
   post(path: string, form: Record<string, string | number>): Promise<FetchResult>;
   stats: TransportStats;
+  /** How many requests callers may usefully start at once right now. */
+  readonly parallelism: number;
 }
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
@@ -59,6 +64,8 @@ export interface TransportOptions {
   baseUrl: string;
   contact?: string;
   minIntervalMs?: number;
+  /** Requests in flight at once, 1–4. */
+  concurrency?: number;
   jitterMs?: number;
   maxRetries?: number;
   maxThrottles?: number;
@@ -71,6 +78,9 @@ export interface TransportOptions {
   signal?: AbortSignal;
   onWait?: (ms: number, why: string) => void;
 }
+
+/** Closest two request starts may be when running more than one at a time. */
+export const MIN_PARALLEL_SPACING_MS = 300;
 
 const ALLOWED = /^\/(api|auxiliary)\//;
 const DISALLOWED = /^\/(admin|myaccount)(\/|$)/i;
@@ -102,7 +112,10 @@ export function retryAfterMs(header: string | null, now: number): number {
 export class Number8Transport implements Transport {
   readonly stats: TransportStats = { requests: 0, retries: 0, throttles: 0 };
   private nextAt = 0;
-  private o: Required<Omit<TransportOptions, "signal" | "onWait" | "contact">> &
+  private limit: number;
+  private inFlight = 0;
+  private waiting: Array<() => void> = [];
+  private o: Required<Omit<TransportOptions, "signal" | "onWait" | "contact" | "concurrency">> &
     Pick<TransportOptions, "signal" | "onWait" | "contact">;
 
   constructor(opts: TransportOptions) {
@@ -120,6 +133,34 @@ export class Number8Transport implements Transport {
       ...opts,
     };
     this.o.minIntervalMs = Math.max(1000, this.o.minIntervalMs);
+    this.limit = Math.min(4, Math.max(1, Math.round(opts.concurrency ?? 1)));
+  }
+
+  get parallelism() {
+    return this.limit;
+  }
+
+  /** Drop to one request at a time for the rest of this transport's life. */
+  private slowDown() {
+    this.limit = 1;
+  }
+
+  private async acquire() {
+    while (this.inFlight >= this.limit) await new Promise<void>((r) => this.waiting.push(r));
+    this.inFlight++;
+  }
+
+  private release() {
+    this.inFlight--;
+    this.waiting.shift()?.();
+  }
+
+  /** Reserves the next start time, so concurrent callers are spaced out. */
+  private reserveStart(): number {
+    const at = Math.max(this.o.now(), this.nextAt);
+    const spacing = this.limit > 1 ? Math.max(MIN_PARALLEL_SPACING_MS, Math.floor(this.o.minIntervalMs / this.limit)) : 0;
+    this.nextAt = at + spacing;
+    return at - this.o.now();
   }
 
   get userAgent() {
@@ -152,11 +193,20 @@ export class Number8Transport implements Transport {
   private async request(method: string, path: string, body: string | null): Promise<FetchResult> {
     if (DISALLOWED.test(path) || !ALLOWED.test(path))
       throw new StopRunError(`Refusing to fetch ${path}: not a public API path`, "blocked");
+    await this.acquire();
+    try {
+      return await this.attempt(method, path, body);
+    } finally {
+      this.release();
+    }
+  }
+
+  private async attempt(method: string, path: string, body: string | null): Promise<FetchResult> {
     const url = this.o.baseUrl + path;
     let attempt = 0;
     for (;;) {
       attempt++;
-      await this.wait(this.nextAt - this.o.now(), "pacing");
+      await this.wait(this.reserveStart(), "pacing");
       if (this.o.signal?.aborted) throw new StopRunError("Run was stopped", "aborted");
       const started = this.o.now();
       this.stats.requests++;
@@ -189,7 +239,8 @@ export class Number8Transport implements Transport {
       }
       if (this.o.signal?.aborted) throw new StopRunError("Run was stopped", "aborted");
       const elapsedMs = this.o.now() - started;
-      this.nextAt = this.o.now() + this.gap(elapsedMs);
+      if (elapsedMs > 3000) this.slowDown();
+      if (this.limit === 1) this.nextAt = Math.max(this.nextAt, this.o.now() + this.gap(elapsedMs));
 
       const canRetry = attempt <= this.o.maxRetries;
       if (failure || !res || !buf) {
@@ -199,6 +250,7 @@ export class Number8Transport implements Transport {
       }
       if (res.status === 429 || res.status === 503) {
         this.stats.throttles++;
+        this.slowDown();
         if (this.stats.throttles >= this.o.maxThrottles)
           throw new StopRunError(
             `number8.bid asked us to slow down ${this.stats.throttles} times; stopping this run`,

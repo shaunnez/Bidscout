@@ -101,3 +101,53 @@ test("Retry-After parsing has sane bounds", () => {
   assert.equal(retryAfterMs("1", 0), 5_000);
   assert.equal(retryAfterMs("99999", 0), 15 * 60_000);
 });
+
+test("concurrency: at most N in flight, starts spaced 300 ms+, and a slow reply drops to one at a time", async () => {
+  let clock = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let hold = true;
+  const targets = [0]; // the first request starts straight away
+  const held: Array<() => void> = [];
+  const t = new Number8Transport({
+    baseUrl: "https://example.test", concurrency: 4, jitterMs: 0, random: () => 0, now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    onWait: (ms, why) => { if (why === "pacing") targets.push(clock + ms); },
+    fetch: async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      if (hold) await new Promise<void>((r) => held.push(r));
+      inFlight--;
+      return new Response("{}", { headers: { "content-type": "application/json" } });
+    },
+  });
+  assert.equal(t.parallelism, 4);
+  const all = Array.from({ length: 6 }, (_, i) => t.get(`/api/p${i}`));
+  for (let i = 0; i < 50 && held.length < 4; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(held.length, 4, "four in flight");
+  assert.equal(maxInFlight, 4);
+  const first = targets.slice(0, 4);
+  for (let i = 1; i < first.length; i++) assert.ok(first[i]! - first[i - 1]! >= 300, `start spacing in ${first.join(",")}`);
+  clock += 5000; // these replies took 5 s: slow
+  hold = false;
+  held.splice(0).forEach((r) => r());
+  await Promise.all(all);
+  assert.equal(t.parallelism, 1, "slow replies drop to one at a time");
+  assert.equal(maxInFlight, 4);
+});
+
+test("concurrency: a 429 also drops to one at a time", async () => {
+  const { t } = harnessWith(4, [json({}, 429, { "retry-after": "5" }), json({ ok: 1 })]);
+  await t.get("/api/x");
+  assert.equal(t.parallelism, 1);
+});
+
+function harnessWith(concurrency: number, responses: Array<() => Response>) {
+  let clock = 0;
+  const t = new Number8Transport({
+    baseUrl: "https://example.test", concurrency, jitterMs: 0, random: () => 0, now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    fetch: async () => responses.shift()!(),
+  });
+  return { t };
+}

@@ -3,7 +3,9 @@ import os from "node:os";
 import { cleanText } from "../../shared/clean.ts";
 import { parseTerms } from "../../shared/terms.ts";
 import { tx, type Db, type Tx } from "../db.ts";
-import { isoToDate, n8, type N8AuctionsPage, type N8ItemData, type N8LotsPage } from "../number8.ts";
+import { isoToDate, n8, num, type N8AuctionsPage, type N8ItemData, type N8Lot, type N8LotsPage } from "../number8.ts";
+import { friendBids, friendHighBidder, loadFriendIds, recordFriendBids, recordFriendHigh, type FriendIds } from "../friends.ts";
+import { getScanSettings } from "../settings.ts";
 import { saveSnapshot } from "../snapshots.ts";
 import type { ObjectStore } from "../store.ts";
 import { HttpError, StopRunError, type Transport } from "../transport.ts";
@@ -21,6 +23,8 @@ export interface RunOptions {
   maxPages?: number;
   category?: string;
   keyword?: string;
+  /** History: stop at the first page that adds no new lots (the weekly top-up). */
+  untilKnown?: boolean;
 }
 
 interface LiveCursor {
@@ -54,7 +58,13 @@ const MAX_AUCTION_PAGES = 60;
 export const newOwner = () => `${os.hostname()}:${process.pid}:${crypto.randomUUID().slice(0, 8)}`;
 
 /** Queues a run, or returns the one already queued or running (only one at a time, ever). */
-export async function startRun(db: Db, kind: RunKind, options: RunOptions = {}, resume = false) {
+export async function startRun(
+  db: Db,
+  kind: RunKind,
+  options: RunOptions = {},
+  resume = false,
+  meta: { trigger?: "manual" | "schedule"; startedBy?: number | null } = {},
+) {
   return tx(db, async (c) => {
     await c.query("SELECT pg_advisory_xact_lock(hashtext('bidscout-start-run'))");
     const active = await c.query(`SELECT * FROM scan_runs WHERE state IN ('queued','running') LIMIT 1`);
@@ -71,7 +81,10 @@ export async function startRun(db: Db, kind: RunKind, options: RunOptions = {}, 
         opts = { ...last.rows[0].options, ...options };
       }
     }
-    const r = await c.query(`INSERT INTO scan_runs (kind, options, cursor) VALUES ($1,$2,$3) RETURNING *`, [kind, opts, cursor]);
+    const r = await c.query(
+      `INSERT INTO scan_runs (kind, options, cursor, trigger, started_by) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [kind, opts, cursor, meta.trigger ?? "manual", meta.startedBy ?? null],
+    );
     return { run: r.rows[0], reused: false };
   });
 }
@@ -103,6 +116,24 @@ interface Ctx {
   run: RunRow;
   now: () => Date;
   log: (msg: string) => void;
+  friends: FriendIds;
+}
+
+/** Ingests a page of lot rows; also notes when someone in the group is the high bidder. */
+async function ingestRows(c: Tx, ctx: Ctx, rows: N8Lot[], raw: N8Lot[] | undefined, snapId: number, now: Date, past: boolean) {
+  const add: Counters = {};
+  for (const [i, row] of rows.entries()) {
+    const o = await ingestLot(c, row, snapId, `items.${i}`, now, past);
+    add.lots_seen = (add.lots_seen ?? 0) + 1;
+    if (o.isNew) add.lots_new = (add.lots_new ?? 0) + 1;
+    if (o.changed) add.lots_changed = (add.lots_changed ?? 0) + 1;
+    if (o.observed) add.observations = (add.observations ?? 0) + 1;
+    if (o.closedNow) add.lots_closed = (add.lots_closed ?? 0) + 1;
+    if (o.parsed) add.specs_parsed = (add.specs_parsed ?? 0) + 1;
+    const rawRow = raw?.[i] as unknown as Record<string, unknown> | undefined;
+    await recordFriendHigh(c, Number(row.id), friendHighBidder(ctx.friends, rawRow), num(row.current_bid), snapId);
+  }
+  return add;
 }
 
 /** Locks the run row if this worker still holds the lease, else throws LeaseLost. */
@@ -179,39 +210,67 @@ async function liveStep(ctx: Ctx, cur: LiveCursor): Promise<boolean> {
       });
       return true;
     }
-    const auctionId = cur.queue[cur.idx]!;
-    let page: N8LotsPage;
+    // Up to `parallelism` auctions at once; each auction's pages are read in order.
+    const batch = cur.queue.slice(cur.idx, cur.idx + transport.parallelism);
+    await Promise.all(batch.map((auctionId) => listAuction(ctx, auctionId, now)));
+    await tx(db, async (c) => {
+      await fence(c, ctx);
+      Object.assign(cur, { idx: cur.idx + batch.length, lotPage: 1 });
+      await progress(c, ctx, {}, { cursor: cur });
+    });
+    return true;
+  }
+
+  if (cur.stage === "details") {
+    const max = run.options.maxDetails ?? 2000;
+    const room = Math.max(0, max - cur.detailsDone);
+    const next = await db.query(
+      `SELECT id, auction_id, title FROM lots WHERE needs_detail AND status='open' ORDER BY ends_at NULLS LAST, id LIMIT $1`,
+      [Math.min(transport.parallelism, room)],
+    );
+    if (!next.rows.length) {
+      const more = room === 0 && (await db.query(`SELECT 1 FROM lots WHERE needs_detail AND status='open' LIMIT 1`)).rowCount;
+      await tx(db, async (c) => {
+        await fence(c, ctx);
+        cur.stage = "finish";
+        await progress(c, ctx, {}, { cursor: cur, phase: "finish", ...(more ? { stop_reason: `Read the first ${max} lot pages; the rest wait for the next scan` } : {}) });
+      });
+      return true;
+    }
+    await Promise.all(next.rows.map((lot) => readDetail(ctx, lot, cur)));
+    return true;
+  }
+
+  await finish(ctx);
+  return false;
+}
+
+async function listAuction(ctx: Ctx, auctionId: number, now: Date) {
+  const { db, store, transport, run } = ctx;
+  for (let page = 1; ; page++) {
+    let doc: N8LotsPage;
+    let raw: N8LotsPage;
     let snapId: number;
     try {
-      const res = await n8.lots(transport, auctionId, cur.lotPage);
+      const res = await n8.lots(transport, auctionId, page);
       const snap = await saveSnapshot<N8LotsPage>(db, store, run.id, res, ctx.now());
-      page = snap.doc;
+      ({ doc, raw } = snap);
       snapId = snap.id;
     } catch (e) {
       if (!(e instanceof HttpError)) throw e;
       await tx(db, async (c) => {
         await fence(c, ctx);
-        Object.assign(cur, { idx: cur.idx + 1, lotPage: 1 });
-        await progress(c, ctx, { errors: 1 }, { cursor: cur, last_error: e.message });
+        await progress(c, ctx, { errors: 1 }, { last_error: e.message });
       });
-      return true;
+      return;
     }
+    const more = page < (doc.total_pages ?? 1) && (doc.items?.length ?? 0) > 0;
     await tx(db, async (c) => {
       await fence(c, ctx);
-      const add: Counters = { pages_read: 1 };
-      for (const [i, row] of (page.items ?? []).entries()) {
-        const o = await ingestLot(c, row, snapId, `items.${i}`, now);
-        add.lots_seen = (add.lots_seen ?? 0) + 1;
-        if (o.isNew) add.lots_new = (add.lots_new ?? 0) + 1;
-        if (o.changed) add.lots_changed = (add.lots_changed ?? 0) + 1;
-        if (o.observed) add.observations = (add.observations ?? 0) + 1;
-        if (o.closedNow) add.lots_closed = (add.lots_closed ?? 0) + 1;
-        if (o.parsed) add.specs_parsed = (add.specs_parsed ?? 0) + 1;
-      }
-      const more = cur.lotPage < (page.total_pages ?? 1) && (page.items?.length ?? 0) > 0;
+      const add = await ingestRows(c, ctx, doc.items ?? [], raw.items, snapId, now, false);
+      add.pages_read = 1;
       let tick: string | undefined;
-      if (more) cur.lotPage++;
-      else {
+      if (!more) {
         add.auctions_listed = 1;
         const a = await c.query(
           `UPDATE auctions SET last_listed_at=$2::timestamptz,
@@ -220,54 +279,46 @@ async function liveStep(ctx: Ctx, cur: LiveCursor): Promise<boolean> {
           [auctionId, now],
         );
         tick = `Read ${a.rows[0]?.title ?? `auction ${auctionId}`}`;
-        Object.assign(cur, { idx: cur.idx + 1, lotPage: 1 });
       }
-      await progress(c, ctx, add, { cursor: cur }, tick);
+      await progress(c, ctx, add, {}, tick);
     });
-    return true;
+    if (!more) return;
   }
+}
 
-  if (cur.stage === "details") {
-    const max = run.options.maxDetails ?? 2000;
-    const next = await db.query(
-      `SELECT id, auction_id, title FROM lots WHERE needs_detail AND status='open' ORDER BY ends_at NULLS LAST, id LIMIT 1`,
-    );
-    const lot = next.rows[0];
-    if (!lot || cur.detailsDone >= max) {
-      await tx(db, async (c) => {
-        await fence(c, ctx);
-        cur.stage = "finish";
-        await progress(c, ctx, {}, { cursor: cur, phase: "finish", ...(lot ? { stop_reason: `Read the first ${max} lot pages; the rest wait for the next scan` } : {}) });
-      });
-      return true;
-    }
-    try {
-      const res = await n8.itemData(transport, lot.id, lot.auction_id);
-      const snap = await saveSnapshot<N8ItemData>(db, store, run.id, res, ctx.now());
-      await tx(db, async (c) => {
-        await fence(c, ctx);
-        await recordDetail(c, lot.id, lot.auction_id, snap.id, snap.doc);
-        cur.detailsDone++;
-        await progress(c, ctx, { details_read: 1 }, { cursor: cur }, cur.detailsDone % 25 === 1 ? `Opened ${cleanText(lot.title).slice(0, 70)}` : undefined);
-      });
-    } catch (e) {
-      if (!(e instanceof HttpError)) throw e;
-      await tx(db, async (c) => {
-        await fence(c, ctx);
-        await c.query(`UPDATE lots SET needs_detail=false WHERE id=$1`, [lot.id]);
-        cur.detailsDone++;
-        await progress(c, ctx, { errors: 1 }, { cursor: cur, last_error: e.message });
-      });
-    }
-    return true;
+async function readDetail(ctx: Ctx, lot: { id: number; auction_id: number; title: string }, cur: LiveCursor) {
+  const { db, store, transport, run } = ctx;
+  try {
+    const res = await n8.itemData(transport, lot.id, lot.auction_id);
+    const snap = await saveSnapshot<N8ItemData>(db, store, run.id, res, ctx.now());
+    await tx(db, async (c) => {
+      await fence(c, ctx);
+      await recordDetail(c, lot.id, lot.auction_id, snap.id, snap.doc, snap.raw, ctx.friends);
+      cur.detailsDone++;
+      await progress(c, ctx, { details_read: 1 }, { cursor: cur }, cur.detailsDone % 25 === 1 ? `Opened ${cleanText(lot.title).slice(0, 70)}` : undefined);
+    });
+  } catch (e) {
+    if (!(e instanceof HttpError)) throw e;
+    await tx(db, async (c) => {
+      await fence(c, ctx);
+      await c.query(`UPDATE lots SET needs_detail=false WHERE id=$1`, [lot.id]);
+      cur.detailsDone++;
+      await progress(c, ctx, { errors: 1 }, { cursor: cur, last_error: e.message });
+    });
   }
-
-  await finish(ctx);
-  return false;
 }
 
 /** Stores what the lot page adds: every photo, bid amounts and times, and the auction's payment terms. */
-export async function recordDetail(c: Tx, lotId: number, auctionId: number, snapshotId: number, d: N8ItemData) {
+export async function recordDetail(
+  c: Tx,
+  lotId: number,
+  auctionId: number,
+  snapshotId: number,
+  d: N8ItemData,
+  raw?: N8ItemData,
+  friends?: FriendIds,
+) {
+  if (raw && friends) await recordFriendBids(c, lotId, friendBids(friends, raw.bid_history), snapshotId);
   const images = (d.images ?? []).map((i) => i.image_url).filter(Boolean);
   const bids = (d.bid_history ?? []).map((b) => ({ bid: Number(b.bid), at: b.time_of_bid ?? null }));
   await c.query(
@@ -303,28 +354,31 @@ async function historyStep(ctx: Ctx, cur: HistoryCursor): Promise<boolean> {
       });
       return finishPartial(ctx);
     }
-    const res = await n8.pastSales(transport, cur.page, { category: run.options.category, keyword: run.options.keyword });
-    const snap = await saveSnapshot<N8LotsPage>(db, store, run.id, res, ctx.now());
-    const page = snap.doc;
+    // Up to `parallelism` pages fetched at once, stored in page order.
+    const want = run.options.maxPages ? Math.min(transport.parallelism, run.options.maxPages - cur.pagesThisRun) : transport.parallelism;
+    const pages = Array.from({ length: Math.max(1, want) }, (_, k) => cur.page + k);
+    const snaps = await Promise.all(
+      pages.map(async (pg) => saveSnapshot<N8LotsPage>(db, store, run.id, await n8.pastSales(transport, pg, { category: run.options.category, keyword: run.options.keyword }), ctx.now())),
+    );
     const now = ctx.now();
-    await tx(db, async (c) => {
-      await fence(c, ctx);
-      const add: Counters = { pages_read: 1 };
-      for (const [i, row] of (page.items ?? []).entries()) {
-        const o = await ingestLot(c, row, snap.id, `items.${i}`, now, true);
-        add.lots_seen = (add.lots_seen ?? 0) + 1;
-        if (o.isNew) add.lots_new = (add.lots_new ?? 0) + 1;
-        if (o.changed) add.lots_changed = (add.lots_changed ?? 0) + 1;
-        if (o.closedNow) add.lots_closed = (add.lots_closed ?? 0) + 1;
-        if (o.parsed) add.specs_parsed = (add.specs_parsed ?? 0) + 1;
-      }
-      const last = !page.items?.length || cur.page >= (page.total_pages ?? 1);
-      if (last) cur.stage = "finish";
-      else cur.page++;
-      cur.pagesThisRun++;
-      await progress(c, ctx, add, { cursor: cur, phase: cur.stage, pages_total: page.total_pages ?? null },
-        cur.page % 50 === 0 || last ? `Past sales page ${cur.page} of ${page.total_pages}` : undefined);
-    });
+    for (const [k, snap] of snaps.entries()) {
+      const page = snap.doc;
+      const pg = pages[k]!;
+      const stop = await tx(db, async (c) => {
+        await fence(c, ctx);
+        const add = await ingestRows(c, ctx, page.items ?? [], snap.raw.items, snap.id, now, true);
+        add.pages_read = 1;
+        const last = !page.items?.length || pg >= (page.total_pages ?? 1);
+        const caughtUp = !!run.options.untilKnown && !add.lots_new && pg > 1;
+        cur.page = pg + 1;
+        cur.pagesThisRun++;
+        if (last || caughtUp) cur.stage = "finish";
+        await progress(c, ctx, add, { cursor: cur, phase: cur.stage, pages_total: page.total_pages ?? null },
+          caughtUp ? `Caught up with stored past sales at page ${pg}` : pg % 50 === 0 || last ? `Past sales page ${pg} of ${page.total_pages}` : undefined);
+        return last || caughtUp;
+      });
+      if (stop) break;
+    }
     return true;
   }
   await finish(ctx);
@@ -353,7 +407,7 @@ async function finishPartial(ctx: Ctx) {
 export interface WorkerDeps {
   db: Db;
   store: ObjectStore;
-  makeTransport: (signal: AbortSignal) => Transport;
+  makeTransport: (signal: AbortSignal, concurrency: number) => Transport;
   owner?: string;
   now?: () => Date;
   log?: (msg: string) => void;
@@ -365,8 +419,10 @@ export async function workOneRun(deps: WorkerDeps): Promise<boolean> {
   const run = await claimRun(deps.db, owner);
   if (!run) return false;
   const abort = new AbortController();
-  const transport = deps.makeTransport(abort.signal);
-  const ctx: Ctx = { db: deps.db, store: deps.store, transport, owner, run, now: deps.now ?? (() => new Date()), log: deps.log ?? (() => {}) };
+  const settings = await getScanSettings(deps.db);
+  const transport = deps.makeTransport(abort.signal, settings.concurrency);
+  const friends = await loadFriendIds(deps.db);
+  const ctx: Ctx = { db: deps.db, store: deps.store, transport, owner, run, now: deps.now ?? (() => new Date()), log: deps.log ?? (() => {}), friends };
   const beat = setInterval(async () => {
     try {
       const r = await deps.db.query(

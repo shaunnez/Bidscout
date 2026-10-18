@@ -118,7 +118,7 @@ export function Feed({ page, params, setParams, openLot, summary, scanFinished }
       <section className="results">
         <div className="results-head">
           <div>
-            <h1>{page === "history" ? "Past sales" : page === "watch" ? "Watchlist" : itOnly ? "Live computer & IT lots" : "All live lots"}</h1>
+            <h1>{page === "history" ? "Past sales" : page === "watch" ? "Your favourites" : itOnly ? "Live computer & IT lots" : "All live lots"}</h1>
             <p className="sub">
               {data ? `${data.total.toLocaleString()} ${data.total === 1 ? "lot" : "lots"}` : "Loading…"}
               {page === "history" && summary ? ` · from ${summary.sold.toLocaleString()} recorded final bids` : ""}
@@ -246,8 +246,15 @@ function LotRow({ lot, now, onOpen }: { lot: Lot; now: number; onOpen: () => voi
             {lot.faults.map((f) => <span key={f} className={`fault ${MAJOR.has(f) ? "major" : ""}`}>{FAULT_LABEL[f] ?? f}</span>)}
           </div>
         )}
+        {(lot.friend_high_bidder || lot.friend_bidders > 0 || lot.watcher_count > (lot.watched ? 1 : 0)) && (
+          <div className="social">
+            {lot.friend_high_bidder && <span className="friend">{lot.friend_high_bidder} is the high bidder</span>}
+            {!lot.friend_high_bidder && lot.friend_bidders > 0 && <span className="friend">A friend has bid</span>}
+            {lot.watcher_count > (lot.watched ? 1 : 0) && <span className="watchers">★ {lot.watcher_count - (lot.watched ? 1 : 0)} other{lot.watcher_count - (lot.watched ? 1 : 0) === 1 ? "" : "s"} watching</span>}
+          </div>
+        )}
         <p className="meta">
-          Lot {lot.lot_number ?? "–"} · {lot.auction_title.replace(/\s+-\s+[^-]+$/, "")}{lot.city ? ` · ${lot.city}` : ""}
+          {lot.watched && <span className="star" title="In your favourites">★ </span>}Lot {lot.lot_number ?? "–"} · {lot.auction_title.replace(/\s+-\s+[^-]+$/, "")}{lot.city ? ` · ${lot.city}` : ""}
           {lot.quantity && lot.quantity > 1 ? ` · qty ${lot.quantity}` : ""}
         </p>
       </div>
@@ -278,8 +285,8 @@ function Empty({ page, summary }: { page: string; summary: Summary | null }) {
     );
   return (
     <div className="empty">
-      <h2>{page === "watch" ? "Nothing on your watchlist" : "No lots match"}</h2>
-      <p>{page === "watch" ? "Open a lot and press Watch to keep it here." : "Try fewer filters, or All categories."}</p>
+      <h2>{page === "watch" ? "No favourites yet" : "No lots match"}</h2>
+      <p>{page === "watch" ? "Open a lot and press ☆ Favourite to keep it here." : "Try fewer filters, or All categories."}</p>
     </div>
   );
 }

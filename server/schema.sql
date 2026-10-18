@@ -243,3 +243,72 @@ CREATE TABLE IF NOT EXISTS watchlist (
   note text,
   added_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- 18 Oct 2026: accounts, per-person favourites, friendly bidders, settings.
+
+CREATE TABLE IF NOT EXISTS users (
+  id bigserial PRIMARY KEY,
+  username text NOT NULL,
+  display_name text NOT NULL,
+  password_hash text NOT NULL,
+  is_admin boolean NOT NULL DEFAULT false,
+  disabled boolean NOT NULL DEFAULT false,
+  email text,
+  -- This person's own number8.bid identities, so the group can see each other's bids.
+  n8_username text,
+  n8_bidder_number text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS users_username ON users (lower(username));
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash text PRIMARY KEY,
+  user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_id);
+
+CREATE TABLE IF NOT EXISTS favourites (
+  user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  lot_id int NOT NULL REFERENCES lots(id),
+  max_all_in numeric,
+  note text,
+  added_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, lot_id)
+);
+CREATE INDEX IF NOT EXISTS favourites_lot ON favourites (lot_id);
+
+-- Bids by people in the group, matched against their own number8 IDs before redaction.
+-- Strangers' identities are never stored; only these matches are.
+CREATE TABLE IF NOT EXISTS friend_bids (
+  id bigserial PRIMARY KEY,
+  lot_id int NOT NULL REFERENCES lots(id),
+  user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind text NOT NULL CHECK (kind IN ('high_bidder', 'bid')),
+  amount numeric,
+  bid_at timestamptz,
+  snapshot_id bigint NOT NULL REFERENCES snapshots(id),
+  seen_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS friend_bids_unique ON friend_bids (lot_id, user_id, kind, COALESCE(amount, -1), COALESCE(bid_at, 'epoch'));
+CREATE INDEX IF NOT EXISTS friend_bids_lot ON friend_bids (lot_id, seen_at DESC);
+
+ALTER TABLE lots ADD COLUMN IF NOT EXISTS friend_high_user_id bigint REFERENCES users(id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS settings (
+  key text PRIMARY KEY,
+  value jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by bigint REFERENCES users(id) ON DELETE SET NULL
+);
+
+ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS trigger text NOT NULL DEFAULT 'manual';
+ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS started_by bigint REFERENCES users(id) ON DELETE SET NULL;
+
+-- Search speed (18 Oct 2026)
+CREATE INDEX IF NOT EXISTS lots_open_it ON lots (ends_at) WHERE status = 'open' AND is_it;
+CREATE INDEX IF NOT EXISTS lots_category ON lots (category);
+CREATE INDEX IF NOT EXISTS lots_device_type ON lots (device_type) WHERE device_type IS NOT NULL;
+CREATE INDEX IF NOT EXISTS lots_closed_at ON lots (closed_at DESC) WHERE status = 'closed';

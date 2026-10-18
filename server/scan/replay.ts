@@ -9,13 +9,15 @@ import { recordDetail } from "./runner.ts";
 /**
  * Rebuilds every derived table (auctions, lots, revisions, observations, specs, terms,
  * price history) from the stored snapshots, in the order they were fetched.
- * Use after fixing how a field is read. No requests to number8.bid. The watchlist is kept.
+ * Use after fixing how a field is read. No requests to number8.bid. Favourites and friends'
+ * bids are kept (friends' bids can't be re-derived: stored responses have bidder IDs removed).
  */
 export async function replayAll(db: Db, store: ObjectStore, onProgress?: (done: number, total: number) => void) {
   const active = await db.query(`SELECT id FROM scan_runs WHERE state IN ('queued','running')`);
   if (active.rowCount) throw new Error("A scan is running; wait for it to finish before replaying.");
-  const watch = (await db.query(`SELECT lot_id, max_all_in, note, added_at FROM watchlist`)).rows;
-  await db.query(`TRUNCATE watchlist, comp_stats, spec_values, lot_observations, auction_terms, lot_revisions, lots, auctions`);
+  const favs = (await db.query(`SELECT user_id, lot_id, max_all_in, note, added_at FROM favourites`)).rows;
+  const fbids = (await db.query(`SELECT lot_id, user_id, kind, amount, bid_at, snapshot_id, seen_at FROM friend_bids`)).rows;
+  await db.query(`TRUNCATE watchlist, favourites, friend_bids, comp_stats, spec_values, lot_observations, auction_terms, lot_revisions, lots, auctions`);
   const snaps = (await db.query(`SELECT id, url, request_body, fetched_at FROM snapshots ORDER BY id`)).rows;
   let n = 0;
   for (const s of snaps) {
@@ -37,10 +39,16 @@ export async function replayAll(db: Db, store: ObjectStore, onProgress?: (done: 
     });
     onProgress?.(++n, snaps.length);
   }
-  for (const w of watch)
+  for (const f of favs)
     await db.query(
-      `INSERT INTO watchlist (lot_id, max_all_in, note, added_at) SELECT $1,$2,$3,$4 WHERE EXISTS (SELECT 1 FROM lots WHERE id=$1)`,
-      [w.lot_id, w.max_all_in, w.note, w.added_at],
+      `INSERT INTO favourites (user_id, lot_id, max_all_in, note, added_at) SELECT $1,$2,$3,$4,$5 WHERE EXISTS (SELECT 1 FROM lots WHERE id=$2)`,
+      [f.user_id, f.lot_id, f.max_all_in, f.note, f.added_at],
+    );
+  for (const b of fbids)
+    await db.query(
+      `INSERT INTO friend_bids (lot_id, user_id, kind, amount, bid_at, snapshot_id, seen_at)
+       SELECT $1,$2,$3,$4,$5,$6,$7 WHERE EXISTS (SELECT 1 FROM lots WHERE id=$1) ON CONFLICT DO NOTHING`,
+      [b.lot_id, b.user_id, b.kind, b.amount, b.bid_at, b.snapshot_id, b.seen_at],
     );
   await rebuildCompStats(db);
   return snaps.length;
