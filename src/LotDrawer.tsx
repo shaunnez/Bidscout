@@ -485,23 +485,47 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
   const [ranHere, setRanHere] = useState(0);
   const [links, setLinks] = useState("");
   const pasted = links.match(/https?:\/\/\S*trademe\.co\.nz\/\S*\/listing\/\d+\S*/gi) ?? [];
+  // The lot on screen: a lookup that finishes after the drawer moved to another lot is dropped.
+  const shown = useRef(lot.id);
   useEffect(() => {
+    shown.current = lot.id;
     setRes(state.latest);
     setErr(null);
+    setBusy(false);
     setRanHere(0);
+    // Closing the drawer or changing lots stops any polling.
+    return () => {
+      shown.current = -1;
+    };
   }, [lot.id, state.latest]);
   const run = async (fromLinks = false) => {
+    const forLot = lot.id;
     setBusy(true);
     setErr(null);
     try {
-      const r = fromLinks ? await api.tradeMeLinks(lot.id, pasted.slice(0, 5)) : await api.tradeMe(lot.id, query);
+      let r = fromLinks ? await api.tradeMeLinks(lot.id, pasted.slice(0, 5)) : await api.tradeMe(lot.id, query);
+      if (!r.cached) setRanHere((n) => n + 1);
+      // A new lookup runs on the server; check on it every 2 seconds (a dropped check is retried).
+      const until = Date.now() + 5 * 60_000;
+      let misses = 0;
+      while (r.status === "running" && Date.now() < until && shown.current === forLot) {
+        await new Promise((ok) => setTimeout(ok, 2000));
+        try {
+          r = await api.tradeMeLookup(r.id);
+          misses = 0;
+        } catch (e) {
+          if (++misses >= 5) throw e;
+        }
+      }
+      if (shown.current !== forLot) return;
+      if (r.status === "running") throw new Error("Still searching on the server. Close and reopen this lot in a minute to see the answer.");
+      if (r.status === "failed") throw new Error(r.error ?? "The Trade Me lookup failed.");
       setRes(r);
       if (fromLinks) setLinks("");
-      if (!r.cached) setRanHere((n) => n + 1);
     } catch (e) {
-      setErr((e as Error).message);
+      if (shown.current === forLot) setErr((e as Error).message);
     } finally {
-      setBusy(false);
+      if (shown.current === forLot) setBusy(false);
     }
   };
   // Faulty or for-parts listings only count toward the summary when this lot has a major fault too.

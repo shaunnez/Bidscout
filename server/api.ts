@@ -17,12 +17,13 @@ import { photoSummary } from "./photo-summary.ts";
 import { refreshLot } from "./scan/refresh.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
 import { getScanSettings, getTradeMeSettings, LIVE_HOURS, saveScanSettings, saveTradeMeSettings, TRADEME_LIMITS } from "./settings.ts";
-import { latestForLot, LookupError, tradeMeLookup, tradeMeStatus } from "./trademe.ts";
+import { failInterruptedLookups, latestForLot, loadLookup, LookupError, tradeMeLookup, tradeMeStatus } from "./trademe.ts";
 import { LOT_COLUMNS, LOT_JOINS, parseQuery, searchLots } from "./search.ts";
 import { loadSnapshotDoc } from "./snapshots.ts";
 import { runWorkerLoop } from "./worker.ts";
 
 const ctx = await appContext();
+await failInterruptedLookups(ctx.db);
 const { db, store, config } = ctx;
 const hasUsers = (await db.query(`SELECT 1 FROM users LIMIT 1`)).rowCount;
 if (!isLoopback(config.host) && !hasUsers && !config.password) {
@@ -284,18 +285,28 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
   };
 });
 
-/** Trade Me prices for a lot (server/trademe.ts): Trade Me search, or listing links the person pasted. Reuses answers under 3 days old. */
+/**
+ * Trade Me prices for a lot (server/trademe.ts): Trade Me search, or listing links the person pasted.
+ * Reuses answers under 3 days old. A new lookup runs in the background and the reply comes at once
+ * with status 'running'; the page polls /api/trademe/lookups/:id (a long request is dropped by
+ * Safari after about a minute).
+ */
 app.post<{ Params: { id: string }; Body: { query?: string; links?: string[] } }>("/api/lots/:id/trademe", async (req, reply) => {
   try {
     const links = Array.isArray(req.body?.links) ? req.body.links.slice(0, 20).map(String) : undefined;
     return await tradeMeLookup(
       { db, firecrawl: ctx.firecrawl, robots: ctx.tradeMeRobots, searchers: ctx.tradeMeSearchers },
-      { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? ""), links },
+      { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? ""), links, background: true },
     );
   } catch (e) {
     const status = e instanceof LookupError ? e.status : 502;
     return reply.code(status).send({ error: (e as Error).message });
   }
+});
+
+app.get<{ Params: { id: string } }>("/api/trademe/lookups/:id", async (req, reply) => {
+  const l = await loadLookup(db, Number(req.params.id));
+  return l ?? reply.code(404).send({ error: "No such lookup" });
 });
 
 /** The exact words behind a spec value, re-read from the stored snapshot and checked. */

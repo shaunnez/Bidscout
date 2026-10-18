@@ -101,7 +101,10 @@ export function chromiumSearcher(executablePath: string): TradeMeSearcher {
         const { chromium } = await import("playwright-core");
         const browser = await chromium.launch({ executablePath, args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] });
         try {
-          const page = await (await browser.newContext({ locale: "en-NZ", viewport: { width: 1280, height: 900 } })).newPage();
+          const context = await browser.newContext({ locale: "en-NZ", viewport: { width: 1280, height: 900 } });
+          // Only the page's text is read: skip images, video and fonts (faster, and less memory).
+          await context.route("**/*", (r) => (["image", "media", "font"].includes(r.request().resourceType()) ? r.abort() : r.continue()));
+          const page = await context.newPage();
           const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
           const status = res?.status() ?? null;
           if (status && status >= 400) return { cards: [], pageSha: "", status, text: "" };
