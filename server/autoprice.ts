@@ -6,17 +6,21 @@ import { autoStatus, CACHE_DAYS, LookupError, searchKey, tradeMeLookup, type Loo
 
 /**
  * Automatic Trade Me prices (Shaun's decision, 18 Oct 2026): every open IT lot gets the lookup the
- * button would run for it, through Parallel only, a few at a time with their starts spread out,
+ * button would run for it, through Parallel only, many at a time with their starts spread out,
  * under its own daily limit (Settings). Lots that share a search share one answer (the 3-day
  * cache), so each search runs once. If Trade Me refuses Parallel, or lookups keep failing, it
  * turns itself off and Settings says why.
  */
 
-/** Lookups running at once, and the least time between two starting. */
-export const AUTO_CONCURRENCY = 5;
-export const AUTO_GAP_MS = 2_000;
+/**
+ * Five lookups start a second, up to 100 running at once (each takes 10-30 s). Parallel allows
+ * 600 Extract requests a minute and a lookup reads one or two pages, so this stays near that.
+ */
+export const AUTO_CONCURRENCY = 100;
+export const AUTO_GAP_MS = 200;
 const MAX_FAILURES_IN_A_ROW = 5;
-const BATCH = 300;
+/** Enough lots for a whole day's limit in one pass. */
+const BATCH = 1000;
 
 /** Open IT lots with no answer under 3 days old, the soonest to close first. */
 export async function lotsToPrice(db: Pick<Db, "query">, limit = BATCH) {
