@@ -60,8 +60,8 @@ export interface TradeMeSettings {
 }
 
 export const TRADEME_LIMITS = [10, 20, 50];
-export const TRADEME_AUTO_LIMITS = [50, 100, 200, 500];
-export const DEFAULT_TRADEME_SETTINGS: TradeMeSettings = { enabled: false, dailyLimit: 20, autoEnabled: false, autoDailyLimit: 100, autoStopped: null };
+export const TRADEME_AUTO_LIMITS = [100, 250, 500, 1000];
+export const DEFAULT_TRADEME_SETTINGS: TradeMeSettings = { enabled: false, dailyLimit: 20, autoEnabled: false, autoDailyLimit: 1000, autoStopped: null };
 
 export function cleanTradeMeSettings(input: Partial<TradeMeSettings> | null | undefined): TradeMeSettings {
   const v = { ...DEFAULT_TRADEME_SETTINGS, ...(input ?? {}) };

@@ -2,19 +2,21 @@ import type { Db } from "./db.ts";
 import { lookupQuery } from "../shared/lookup.ts";
 import { saveTradeMeSettings } from "./settings.ts";
 import { TradeMeBlocked, type TradeMeSearcher } from "./tmsearch.ts";
-import { autoStatus, CACHE_DAYS, LookupError, tradeMeLookup, type LookupDeps } from "./trademe.ts";
+import { autoStatus, CACHE_DAYS, LookupError, searchKey, tradeMeLookup, type LookupDeps } from "./trademe.ts";
 
 /**
  * Automatic Trade Me prices (Shaun's decision, 18 Oct 2026): every open IT lot gets the lookup the
- * button would run for it, through Parallel only, one at a time with a gap between them, under its
- * own daily limit (Settings). Lots that share a search share one answer (the 3-day cache), so each
- * search runs once. If Trade Me refuses Parallel, or lookups keep failing, it turns itself off and
- * Settings says why.
+ * button would run for it, through Parallel only, a few at a time with their starts spread out,
+ * under its own daily limit (Settings). Lots that share a search share one answer (the 3-day
+ * cache), so each search runs once. If Trade Me refuses Parallel, or lookups keep failing, it
+ * turns itself off and Settings says why.
  */
 
-export const AUTO_GAP_MS = 20_000;
+/** Lookups running at once, and the least time between two starting. */
+export const AUTO_CONCURRENCY = 5;
+export const AUTO_GAP_MS = 2_000;
 const MAX_FAILURES_IN_A_ROW = 5;
-const BATCH = 50;
+const BATCH = 300;
 
 /** Open IT lots with no answer under 3 days old, the soonest to close first. */
 export async function lotsToPrice(db: Pick<Db, "query">, limit = BATCH) {
@@ -50,6 +52,7 @@ export interface AutoDeps {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   gapMs?: number;
+  concurrency?: number;
   signal?: AbortSignal;
 }
 
@@ -61,7 +64,10 @@ async function stop(db: Db, reason: string) {
   await saveTradeMeSettings(db, { autoEnabled: false, autoStopped: { reason, at: new Date().toISOString() } }, null);
 }
 
-/** One pass over the lots waiting for a price. */
+/**
+ * One pass over the lots waiting for a price. Lots are grouped by search first, so two lots
+ * sharing one never start it twice: the first lot of a group runs the lookup, the rest reuse it.
+ */
 export async function autoPriceTick(deps: AutoDeps) {
   const { db } = deps;
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -71,38 +77,78 @@ export async function autoPriceTick(deps: AutoDeps) {
   if (!(await autoStatus(db)).available) return out;
   // Parallel only: no Chromium (too heavy to run in bulk) and no Firecrawl web-search fallback.
   const lookupDeps: LookupDeps = { db, firecrawl: null, searchers: [deps.parallel], robots: async () => { throw new Error("not used"); } };
+
+  const groups = new Map<string, Array<{ id: number; query: string }>>();
   for (const lot of await lotsToPrice(db)) {
-    if (deps.signal?.aborted) break;
     if ((retryAfter.get(lot.id) ?? 0) > now()) continue;
-    try {
-      const r = await tradeMeLookup(lookupDeps, { lotId: lot.id, userId: null, query: lookupQuery(lot), auto: true });
-      if (r.cached) {
-        out.reused++;
+    const query = lookupQuery(lot);
+    const key = searchKey(query, lot.device_type, lot.title);
+    groups.set(key, [...(groups.get(key) ?? []), { id: lot.id, query }]);
+  }
+  const queue = [...groups.values()];
+  let halt = false;
+  let nextStart = 0;
+
+  // Starts at least `gap` apart across all workers; a reused answer gives its slot back.
+  const takeSlot = async () => {
+    const at = Math.max(now(), nextStart);
+    nextStart = at + gap;
+    if (at > now()) await sleep(at - now());
+  };
+  const lookup = (lot: { id: number; query: string }) => tradeMeLookup(lookupDeps, { lotId: lot.id, userId: null, query: lot.query, auto: true });
+
+  const worker = async () => {
+    for (let group = queue.shift(); group && !halt && !deps.signal?.aborted; group = queue.shift()) {
+      const [first, ...rest] = group;
+      await takeSlot();
+      if (halt) return;
+      try {
+        const r = await lookup(first!);
+        if (r.cached) {
+          out.reused++;
+          nextStart = Math.max(now(), nextStart - gap);
+        } else {
+          out.looked++;
+          failuresInARow = 0;
+        }
+      } catch (e) {
+        if (e instanceof TradeMeBlocked) {
+          if (!halt) {
+            halt = true;
+            out.stopped = `Trade Me refused Parallel, so automatic lookups stopped: ${e.message}`;
+            await stop(db, out.stopped);
+          }
+          return;
+        }
+        // Turned off, or today's automatic lookups are used up: try again next time.
+        if (e instanceof LookupError && e.status === 403) {
+          halt = true;
+          return;
+        }
+        out.failed++;
+        // The rest of the group would run the same failing search: they wait a day too.
+        for (const lot of group) retryAfter.set(lot.id, now() + 86_400_000);
+        // A lookup that never started (e.g. search text too short) costs nothing and isn't a failure in a row.
+        if (!(e instanceof LookupError && e.status === 400) && ++failuresInARow >= MAX_FAILURES_IN_A_ROW && !halt) {
+          halt = true;
+          out.stopped = `${MAX_FAILURES_IN_A_ROW} automatic lookups in a row failed, so they stopped. The last said: ${(e as Error).message}`;
+          failuresInARow = 0;
+          await stop(db, out.stopped);
+        }
         continue;
       }
-      out.looked++;
-      failuresInARow = 0;
-    } catch (e) {
-      if (e instanceof TradeMeBlocked) {
-        out.stopped = `Trade Me refused Parallel, so automatic lookups stopped: ${e.message}`;
-        await stop(db, out.stopped);
-        return out;
+      // The answer is in: the rest of the group take it from the cache.
+      for (const lot of rest) {
+        try {
+          await lookup(lot);
+          out.reused++;
+        } catch {
+          retryAfter.set(lot.id, now() + 86_400_000);
+        }
       }
-      // Turned off, or today's automatic lookups are used up: try again next time.
-      if (e instanceof LookupError && e.status === 403) break;
-      out.failed++;
-      retryAfter.set(lot.id, now() + 86_400_000);
-      // A lookup that never started (e.g. search text too short) costs nothing and isn't a failure in a row.
-      if (!(e instanceof LookupError && e.status === 400) && ++failuresInARow >= MAX_FAILURES_IN_A_ROW) {
-        out.stopped = `${MAX_FAILURES_IN_A_ROW} automatic lookups in a row failed, so they stopped. The last said: ${(e as Error).message}`;
-        failuresInARow = 0;
-        await stop(db, out.stopped);
-        return out;
-      }
-      if (e instanceof LookupError && e.status === 400) continue;
     }
-    await sleep(gap);
-  }
+  };
+  await Promise.all(Array.from({ length: deps.concurrency ?? AUTO_CONCURRENCY }, worker));
   return out;
 }
 

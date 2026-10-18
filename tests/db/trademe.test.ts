@@ -331,20 +331,41 @@ test("Automatic prices: open IT lots only, one search per shared query, own dail
   assert.equal(searched.length, 0, "nothing runs while automatic prices are off");
 
   const buttonUsed = (await tradeMeStatus(db, { firecrawl: null, searchers: [parallel] })).used;
-  await saveTradeMeSettings(db, { autoEnabled: true, autoDailyLimit: 50 }, null);
+  await saveTradeMeSettings(db, { autoEnabled: true, autoDailyLimit: 100 }, null);
   const r = await autoPriceTick(deps);
   assert.deepEqual([r.looked, r.reused, r.failed, r.stopped], [2, 1, 0, null]);
-  assert.deepEqual(searched, ["Dell Latitude 5420", "HP EliteDesk 800 G4"], "closed and non-IT lots are skipped; two lots sharing a search share one lookup");
+  assert.deepEqual(searched.sort(), ["Dell Latitude 5420", "HP EliteDesk 800 G4"], "closed and non-IT lots are skipped; two lots sharing a search share one lookup, even run side by side");
   for (const id of [7001, 7002, 7003]) assert.equal((await latestForLot(db, id))?.status, "ok", `lot ${id} has prices`);
   assert.equal((await latestForLot(db, 7004)), null);
   assert.equal((await db.query(`SELECT count(*)::int AS n FROM price_lookups WHERE origin='auto'`)).rows[0].n, 2);
   assert.equal((await tradeMeStatus(db, { firecrawl: null, searchers: [parallel] })).used, buttonUsed, "automatic lookups don't use up the button's daily limit");
   const p = await autoProgress(db);
-  assert.deepEqual([p.openLots, p.priced, p.used, p.dailyLimit], [3, 3, 2, 50]);
+  assert.deepEqual([p.openLots, p.priced, p.used, p.dailyLimit], [3, 3, 2, 100]);
 
   searched.length = 0;
   assert.equal((await autoPriceTick(deps)).looked, 0);
   assert.equal(searched.length, 0, "lots with an answer under 3 days old wait");
+
+  // Several at once, but never more than the concurrency, and each search once.
+  await lot(7010, "Acer Aspire 5 Laptop", "laptop", "Acer", "Aspire 5");
+  await lot(7011, "Asus VivoBook 15 Laptop", "laptop", "Asus", "VivoBook 15");
+  await lot(7012, "Lenovo IdeaPad 3 Laptop", "laptop", "Lenovo", "IdeaPad 3");
+  await lot(7013, "Lenovo IdeaPad 3 Laptop (2)", "laptop", "Lenovo", "IdeaPad 3");
+  let inFlight = 0;
+  let most = 0;
+  const slow: TradeMeSearcher = {
+    name: "parallel",
+    async search(u) {
+      most = Math.max(most, ++inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      return parallel.search(u);
+    },
+  };
+  searched.length = 0;
+  const many = await autoPriceTick({ ...deps, parallel: slow, concurrency: 2 });
+  assert.deepEqual([many.looked, many.reused, most], [3, 1, 2]);
+  assert.deepEqual(searched.sort(), ["Acer Aspire 5", "Asus VivoBook 15", "Lenovo IdeaPad 3"]);
 
   // A new lot, and Trade Me refuses: automatic prices turn themselves off and say why.
   await lot(7006, "Lenovo ThinkCentre M720q", "mini", "Lenovo", "ThinkCentre M720q");

@@ -85,6 +85,12 @@ export function listingUrl(url: string): { url: string; listingId: string } | nu
 
 export const queryKey = (q: string) => q.toLowerCase().replace(/[^a-z0-9.]+/g, " ").trim();
 
+/** Search text as a lookup stores it: spaces tidied, at most 120 characters. */
+export const tidyQuery = (q: string) => q.replace(/\s+/g, " ").trim().slice(0, 120);
+
+/** The cache key of a search for a lot: lots with the same key share one answer. */
+export const searchKey = (query: string, deviceType: string | null, lotTitle = "") => queryKey(tidyQuery(query)) + filterKey(deviceType, lotTitle);
+
 /**
  * Finds `price` written on the page ("$1,234.50", "$1,234", "$1234") and returns the words around
  * it, with contact details removed, and where the price sits in that excerpt.
@@ -263,13 +269,12 @@ export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | n
     key = `links:${targets.map((t) => t.listingId).sort().join(",")}`;
     plan = { kind: "links", targets };
   } else {
-    query = String(input.query ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
-    key = queryKey(query);
-    if (key.length < 3) throw new LookupError("Search text is too short.", 400);
+    query = tidyQuery(String(input.query ?? ""));
+    if (queryKey(query).length < 3) throw new LookupError("Search text is too short.", 400);
     const lot = input.lotId === null ? null : (await db.query(`SELECT device_type, title FROM lots WHERE id=$1`, [input.lotId])).rows[0];
     plan = { kind: "search", query, deviceType: lot?.device_type ?? null, lotTitle: lot?.title ?? "" };
     // Results are filtered for the lot's kind, so a saved answer is shared only by alike lots.
-    key += filterKey(plan.deviceType, plan.lotTitle);
+    key = searchKey(query, plan.deviceType, plan.lotTitle);
   }
 
   const cached = (await db.query(
