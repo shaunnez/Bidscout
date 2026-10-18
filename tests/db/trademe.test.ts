@@ -472,9 +472,10 @@ test("New price in NZ: shop prices quoted, cached 7 days, on cards with the whol
   assert.deepEqual([a.new_n, a.new_mid, a.new_pct_now], [2, 1000, 13], "all-in $132.25 is 13% of the $1,000 median");
   assert.ok(a.opp_score <= 1, "under 40% of new: an opportunity");
   const mirror = (await searchLots(db, parseQuery({ q: "Midj Bold Mirror" }), user)).items[0];
-  assert.deepEqual([mirror.list_price, mirror.list_quote, mirror.list_rrp, mirror.list_pct_now], [4950, "Wholesale $4,950.00", false, 3]);
+  assert.deepEqual([mirror.list_price, mirror.list_quote, mirror.list_kind, mirror.list_pct_now], [4950, "Wholesale $4,950.00", "wholesale", 3]);
   assert.equal(mirror.title.slice(mirror.list_start, mirror.list_start + mirror.list_quote.length), mirror.list_quote, "quoted from the title");
 
+  assert.equal((await autoProgress(db)).priced, 0, "a product with a model number isn't priced on a shop answer alone");
   // Automatic: Trade Me for every lot worth pricing, new prices for products with a model; not the pallet lot.
   await saveTradeMeSettings(db, { autoEnabled: true, autoDailyLimit: 100 }, null);
   const tmSearched: string[] = [];
@@ -491,6 +492,10 @@ test("New price in NZ: shop prices quoted, cached 7 days, on cards with the whol
   assert.deepEqual(tmSearched.sort(), ["EPEVER SHI2000-22", "Midj Bold Mirror"], "pallet lots are skipped");
   assert.equal(searches.length, 0, "the shop answer is still fresh (7 days), so no new search");
   assert.equal((await latestForLot(db, 7201, "newprice"))?.id, again.id, "relinked from the saved answer");
+  assert.deepEqual([(await autoProgress(db)).priced, (await autoProgress(db)).openLots], [3, 3], "with Trade Me answers too, all three are priced");
+  searches.length = 0;
+  const [x, y] = await Promise.all([1, 2].map(() => newPriceLookup({ db, parallel: search }, { lotId: 7202, userId: user, query: "Midj SHI9000" })));
+  assert.deepEqual([searches.length, x.id === y.id], [1, true], "the same search at once runs once");
   await saveTradeMeSettings(db, { autoEnabled: false }, null);
   await db.end();
 });

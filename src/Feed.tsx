@@ -331,7 +331,7 @@ export function TmBadge({ lot, now }: { lot: Lot; now: number }) {
       )}
       {lot.list_price !== null && lot.list_quote && (
         <span className="deal quiet" title={`From the lot's title: “${lot.list_quote}”. All-in now ${money(lot.all_in)} is ${lot.list_pct_now}% of it.`}>
-          <span className="nowrap">{lot.list_rrp ? "RRP" : "Wholesale"} <b>{money(lot.list_price)}</b></span>
+          <span className="nowrap">{lot.list_kind === "rrp" ? "RRP" : lot.list_kind === "retail" ? "Retail" : "Wholesale"} <b>{money(lot.list_price)}</b></span>
           <small className="nowrap">now {lot.list_pct_now}% · in the title</small>
         </span>
       )}

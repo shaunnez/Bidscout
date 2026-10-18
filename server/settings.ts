@@ -76,7 +76,7 @@ export function cleanTradeMeSettings(input: Partial<TradeMeSettings> | null | un
   };
 }
 
-export async function getTradeMeSettings(db: Db): Promise<TradeMeSettings> {
+export async function getTradeMeSettings(db: Pick<Db, "query">): Promise<TradeMeSettings> {
   const r = await db.query(`SELECT value FROM settings WHERE key='trademe'`);
   return cleanTradeMeSettings(r.rows[0]?.value);
 }

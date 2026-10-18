@@ -70,7 +70,8 @@ export interface Lot {
   /** A wholesale or RRP price written in the title, the words it came from and where. */
   list_price: number | null;
   list_quote: string | null;
-  list_rrp: boolean | null;
+  /** "wholesale", "rrp" or "retail": the word in the title. */
+  list_kind: "wholesale" | "rrp" | "retail" | null;
   list_start: number | null;
   list_pct_now: number | null;
   /** Against outside prices, as a share of the opportunity line: 1 or less is an opportunity. */

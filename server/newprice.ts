@@ -29,15 +29,16 @@ export interface ShopPrice {
 }
 
 const PRICE = /(?:NZ)?\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{2}))?(?![\d,])/g;
-/** Not the price you'd pay for the product: a saving, an old price, shipping or a payment plan. */
-const NOT_BEFORE = /(?:was|save|saving|you save|from only|shipping|delivery|freight|deposit|discount|off|afterpay|laybuy|zip|weekly|fortnightly|monthly|per week|per month|over)\s*[:-]?\s*$/i;
+/** Not the price you'd pay for the product: a saving, an old, list or RRP price, a price before GST, shipping or a payment plan. */
+const NOT_BEFORE = /(?:was|save|saving|you save|from only|rrp|r\.r\.p\.?|list price|ex\.? ?gst|excl\.? ?gst|excluding gst|shipping|delivery|freight|deposit|discount|off|afterpay|laybuy|zip|weekly|fortnightly|monthly|per week|per month|over)\s*[:-]?\s*$/i;
 const NOT_AFTER = /^\s*(?:off|per\b|\/\s*(?:wk|week|mth|month|fortnight)|p\/?m\b|pw\b|a week|weekly|fortnightly|monthly|shipping|delivery|deposit|\+ ?gst|excl)/i;
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /** Where the product is named in the text: the model number if the search has one, else most of its words. */
 export function productMention(text: string, query: string): number {
-  const model = query.split(/\s+/).find((w) => /\d/.test(w) && /[a-z]/i.test(w));
+  // The longest word with digits (and letters, or 4+ digits): "7100123456" in "3M 7100123456", not "3M".
+  const model = query.split(/\s+/).filter((w) => /\d/.test(w) && (/[a-z]/i.test(w) || w.replace(/\D/g, "").length >= 4)).sort((a, b) => b.length - a.length)[0];
   if (model) {
     const want = norm(model);
     // Compare without spaces or dashes ("SHI2000-22" = "SHI 2000 22"), mapping back to the text.
@@ -84,7 +85,8 @@ export function shopPrice(hit: SearchHit, query: string): ShopPrice | null {
   }
   if (!best) return null;
   const { dist: _d, ...shop } = best;
-  return shop;
+  // Page titles can carry contact details too.
+  return { ...shop, title: shop.title === null ? null : stripContacts(shop.title) };
 }
 
 export interface NewPriceDeps {
@@ -94,46 +96,74 @@ export interface NewPriceDeps {
 }
 
 /** Is the new-price lookup usable now, and if not, why not. */
-export async function newPriceStatus(db: Db, parallel: ParallelSearch | null) {
+export async function newPriceStatus(db: Pick<Db, "query">, parallel: ParallelSearch | null) {
   if (!parallel) return { available: false, reason: "Needs a Parallel API key (PARALLEL_API_KEY)." };
   const s = await tradeMeStatus(db, { firecrawl: null, searchers: [{ name: "parallel", search: async () => { throw new Error("unused"); } }] });
   return { available: s.available, reason: s.reason, used: s.used, dailyLimit: s.dailyLimit };
 }
 
+/** New-price lookups in progress in this process, by query key. */
+const running = new Map<string, Promise<unknown>>();
+
+const CACHED = `SELECT id FROM price_lookups WHERE source='newprice' AND query_key=$1 AND status='ok' AND created_at > $2::timestamptz - make_interval(days => $3) ORDER BY id DESC LIMIT 1`;
+
 /** Runs (or reuses, for 7 days) the new-price lookup for `query`, and links it to the lot. */
-export async function newPriceLookup(deps: NewPriceDeps, input: { lotId: number | null; userId: number | null; query: string; auto?: boolean; fresh?: boolean }) {
+export async function newPriceLookup(deps: NewPriceDeps, input: { lotId: number | null; userId: number | null; query: string; auto?: boolean; fresh?: boolean }): Promise<any> {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const query = tidyQuery(input.query);
   const key = `new:${queryKey(query)}`;
   if (queryKey(query).length < 3) throw new LookupError("Search text is too short.", 400);
   if (!deps.parallel) throw new LookupError("Needs a Parallel API key (PARALLEL_API_KEY).", 503);
+  const reuse = async (cachedId: number) => {
+    await linkLot(db, cachedId, input.lotId);
+    return { ...(await loadLookup(db, cachedId))!, cached: true };
+  };
   // "Search shops again" (fresh) skips the saved answer.
-  const cached = input.fresh ? undefined : (await db.query(
-    `SELECT id FROM price_lookups WHERE source='newprice' AND query_key=$1 AND status='ok' AND created_at > $2::timestamptz - make_interval(days => $3) ORDER BY id DESC LIMIT 1`,
-    [key, now(), NEW_CACHE_DAYS],
-  )).rows[0];
-  if (cached) {
-    await linkLot(db, Number(cached.id), input.lotId);
-    return { ...(await loadLookup(db, Number(cached.id)))!, cached: true };
+  const cached = input.fresh ? undefined : (await db.query(CACHED, [key, now(), NEW_CACHE_DAYS])).rows[0];
+  if (cached) return reuse(Number(cached.id));
+  // The same search already running: wait for it and take its answer.
+  const inFlight = running.get(key);
+  if (inFlight) {
+    await inFlight.catch(() => {});
+    return newPriceLookup(deps, { ...input, fresh: false });
   }
-  const id = await tx(db, async (c) => {
+  const work = run(deps, input, query, key, now, reuse);
+  running.set(key, work);
+  try {
+    return await work;
+  } finally {
+    running.delete(key);
+  }
+}
+
+async function run(deps: NewPriceDeps, input: { lotId: number | null; userId: number | null; auto?: boolean; fresh?: boolean }, query: string, key: string, now: () => Date, reuse: (id: number) => Promise<any>) {
+  const { db } = deps;
+  const parallel = deps.parallel!;
+  // Every query in the locked section uses the transaction's client: one that waits for another
+  // pool client while holding the lock could stall them all.
+  const reserved = await tx(db, async (c) => {
     await c.query(`SELECT pg_advisory_xact_lock(hashtext('bidscout:trademe-limit'))`);
-    const s = await getTradeMeSettings(db);
+    // Another process may have just finished the same search.
+    const done = input.fresh ? undefined : (await c.query(CACHED, [key, now(), NEW_CACHE_DAYS])).rows[0];
+    if (done) return { cachedId: Number(done.id) };
+    const s = await getTradeMeSettings(c);
     if (!s.enabled) throw new LookupError("An admin can turn Trade Me prices on in Settings.", 403);
-    const status = input.auto ? await autoStatus(c) : await newPriceStatus(db, deps.parallel);
+    const status = input.auto ? await autoStatus(c) : await newPriceStatus(c, parallel);
     if (!status.available) throw new LookupError(status.reason!, 403);
     const r = await c.query(
       `INSERT INTO price_lookups (source, query, query_key, lot_id, requested_by, status, created_at, origin, method) VALUES ('newprice',$1,$2,$3,$4,'running',$5,$6,'parallel-search') RETURNING id`,
       [query, key, input.lotId, input.userId, now(), input.auto ? "auto" : "button"],
     );
-    return Number(r.rows[0].id);
+    return { id: Number(r.rows[0].id) };
   });
+  if ("cachedId" in reserved) return reuse(reserved.cachedId!);
+  const id = reserved.id;
   let error: string | null = null;
   let hits: SearchHit[] = [];
   const shops: ShopPrice[] = [];
   try {
-    hits = await deps.parallel.search(
+    hits = await parallel.search(
       `Current retail price in New Zealand dollars of the ${query}, new, from New Zealand shops.`,
       [`${query} price NZ`, `${query} buy New Zealand`],
       { maxResults: 15, country: "NZ", excludeDomains: ["trademe.co.nz", "number8.bid", "facebook.com"] },

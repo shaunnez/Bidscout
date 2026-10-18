@@ -17,6 +17,13 @@ import { autoStatus, CACHE_DAYS, LookupError, searchKey, tradeMeLookup, type Loo
 
 /** Bulk, pallet and mixed lots (the same words as isBulkLot in shared/lookup.ts): nothing to price. */
 export const NOT_BULK = `l.title !~* '\\m(pallets? (lot|of|load)|bulk|assorted|mixed|miscellaneous|misc|contents of|box(es)? of|lots? of|job lot|bundle of)\\M'`;
+/**
+ * Might have a model number (a superset of modelNumber in shared/lookup.ts, which decides): a code
+ * of capitals and digits, or a model / part number label. Lots without one never get a new price.
+ */
+export const MODELISH = `(l.description ~ '(?=[A-Z0-9./-]*[0-9])(?=[A-Z0-9./-]*[A-Z])[A-Z0-9][A-Z0-9./-]{3,}[A-Z0-9]'
+  OR l.title ~ '(?=[A-Z0-9./-]*[0-9])(?=[A-Z0-9./-]*[A-Z])[A-Z0-9][A-Z0-9./-]{3,}[A-Z0-9]'
+  OR l.description ~* '\\m(model|part\\s*(no|number)|p/n|pn|sku|mpn)\\M')`;
 const HAS = (source: string, days: string) => `EXISTS (SELECT 1 FROM price_lookup_lots k JOIN price_lookups pl ON pl.id = k.lookup_id
   WHERE k.lot_id = l.id AND pl.status = 'ok' AND pl.source = '${source}' AND pl.created_at > now() - make_interval(days => ${days}))`;
 
@@ -35,17 +42,18 @@ const BATCH = 1000;
  * Open lots waiting for a price, the soonest to close first: no Trade Me answer under 7 days old,
  * or (not computers) no new-price answer under 7 days old.
  */
-export async function lotsToPrice(db: Pick<Db, "query">, limit = BATCH) {
+export async function lotsToPrice(db: Pick<Db, "query">, limit = BATCH, noModel: number[] = []) {
   const r = await db.query(
     `SELECT * FROM (
        SELECT l.id, l.is_it, l.make, l.model, l.cpu, l.title, l.description, l.ram_gb::float8 AS ram_gb, l.storage_gb::float8 AS storage_gb,
-              l.storage_type, l.device_type, l.ends_at, NOT ${HAS("trademe", "$1")} AS need_tm, (NOT l.is_it AND NOT ${HAS("newprice", "$2")}) AS need_new
+              l.storage_type, l.device_type, l.ends_at, NOT ${HAS("trademe", "$1")} AS need_tm,
+              (NOT l.is_it AND ${MODELISH} AND NOT (l.id = ANY($4::int[])) AND NOT ${HAS("newprice", "$2")}) AS need_new
        FROM lots l
        WHERE l.status = 'open' AND (l.ends_at IS NULL OR l.ends_at > now()) AND ${NOT_BULK}) x
      WHERE need_tm OR need_new
      ORDER BY ends_at ASC NULLS LAST, id
      LIMIT $3`,
-    [CACHE_DAYS, NEW_CACHE_DAYS, limit],
+    [CACHE_DAYS, NEW_CACHE_DAYS, limit, noModel],
   );
   return r.rows;
 }
@@ -58,7 +66,8 @@ export async function lotsToPrice(db: Pick<Db, "query">, limit = BATCH) {
 export async function autoProgress(db: Pick<Db, "query">) {
   const r = await db.query(
     `SELECT count(*) AS open,
-            count(*) FILTER (WHERE ${HAS("trademe", "$1")} OR ${HAS("newprice", "$2")}) AS priced
+            -- Priced: a Trade Me answer, and for a product with a model number a new price too.
+            count(*) FILTER (WHERE ${HAS("trademe", "$1")} AND (l.is_it OR NOT ${MODELISH} OR ${HAS("newprice", "$2")})) AS priced
      FROM lots l WHERE l.status = 'open' AND (l.ends_at IS NULL OR l.ends_at > now()) AND ${NOT_BULK}`,
     [CACHE_DAYS, NEW_CACHE_DAYS],
   );
@@ -93,6 +102,8 @@ export interface AutoDeps {
 
 /** Lots whose lookup failed are left alone for a day (in this process), per kind of lookup. */
 const retryAfter = new Map<string, number>();
+/** Lots the SQL thought might have a model number but modelNumber found none (so no new price). */
+const noModel = new Set<number>();
 let failuresInARow = 0;
 
 async function stop(db: Db, reason: string) {
@@ -122,12 +133,15 @@ export async function autoPriceTick(deps: AutoDeps) {
     g.lots.push(lot);
     groups.set(`${kind}|${key}`, g);
   };
-  for (const lot of await lotsToPrice(db)) {
+  for (const lot of await lotsToPrice(db, BATCH, [...noModel])) {
     const query = lookupQuery(lot);
     if (!query) continue;
     if (lot.need_tm) add("trademe", searchKey(query, lot.device_type, lot.title), { id: lot.id, query });
     // New prices only for products with a model number: a shop search for "office desk" means little.
-    if (lot.need_new && deps.search && modelNumber(lot.description ?? "", lot.title)) add("newprice", query.toLowerCase(), { id: lot.id, query });
+    if (lot.need_new && deps.search) {
+      if (modelNumber(lot.description ?? "", lot.title)) add("newprice", query.toLowerCase(), { id: lot.id, query });
+      else noModel.add(lot.id); // left out of later passes, so it doesn't hold a place in the batch
+    }
   }
   const queue = [...groups.values()];
   let halt = false;
