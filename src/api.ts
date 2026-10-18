@@ -155,7 +155,7 @@ export interface TradeMeItem {
 export interface TradeMeLookup {
   id: number;
   query: string;
-  status: "ok" | "failed";
+  status: "ok" | "failed" | "running";
   error: string | null;
   searched: number;
   found: number;
@@ -309,6 +309,7 @@ export const api = {
   auctions: (scope: "live" | "closed") => call<{ auctions: Auction[] }>(`/api/auctions?scope=${scope}`),
   auction: (id: number) => call<Auction>(`/api/auctions/${id}`),
   tradeMe: (id: number, query: string) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ query }) }),
+  tradeMeLookup: (lookupId: number) => call<TradeMeLookup>(`/api/trademe/lookups/${lookupId}`),
   tradeMeLinks: (id: number, links: string[]) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ links }) }),
   refreshLot: (id: number) => call<{ ok: true }>(`/api/lots/${id}/refresh`, { method: "POST", body: "{}" }),
 };

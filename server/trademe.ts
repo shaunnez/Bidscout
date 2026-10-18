@@ -209,7 +209,13 @@ const linkLot = (db: Db, lookupId: number, lotId: number | null) =>
     ? Promise.resolve()
     : db.query(`INSERT INTO price_lookup_lots (lookup_id, lot_id) VALUES ($1,$2) ON CONFLICT (lookup_id, lot_id) DO UPDATE SET used_at = now()`, [lookupId, lotId]);
 
-const running = new Map<string, Promise<unknown>>();
+/** Lookups in progress in this process, by query key. */
+const running = new Map<string, { id: number; done: Promise<unknown> }>();
+
+/** Lookups left 'running' by a restart will never finish: mark them failed (one process runs lookups). */
+export async function failInterruptedLookups(db: Pick<Db, "query">) {
+  await db.query(`UPDATE price_lookups SET status='failed', error='Interrupted when BidScout restarted; try again.' WHERE status='running'`);
+}
 
 /** A shorter search: drops CPU, memory and storage words, keeping the make and model (at most 5 words). */
 export function broaderQuery(q: string): string | null {
@@ -232,7 +238,7 @@ type Plan = { kind: "search"; query: string; deviceType: string | null; lotTitle
  * Runs (or reuses) a Trade Me lookup: a web search for `query`, or the listing pages in `links`
  * (pasted by the person from their own Trade Me search, when web search doesn't find them).
  */
-export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | null; userId: number; query?: string; links?: string[] }): Promise<any> {
+export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | null; userId: number; query?: string; links?: string[]; background?: boolean }): Promise<any> {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -267,20 +273,25 @@ export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | n
     await linkLot(db, Number(cached.id), input.lotId);
     return { ...(await loadLookup(db, Number(cached.id)))!, cached: true };
   }
-  if (running.has(key)) {
-    await running.get(key)?.catch(() => {});
+  const inFlight = running.get(key);
+  if (inFlight) {
+    // In the background: the same lookup, still running. Otherwise wait for it and take its answer.
+    if (input.background) return { ...(await loadLookup(db, inFlight.id))!, cached: false };
+    await inFlight.done.catch(() => {});
     return tradeMeLookup(deps, input);
   }
   const id = await reserve(deps, input, query, key, now);
-  const work = run(deps, id, plan, sleep, now);
-  running.set(key, work);
-  try {
-    await work;
-    await linkLot(db, id, input.lotId);
+  const done = run(deps, id, plan, sleep, now)
+    .then(async () => { await linkLot(db, id, input.lotId); })
+    .finally(() => running.delete(key));
+  running.set(key, { id, done });
+  if (input.background) {
+    // The answer (or the error) is saved on the lookup row; the caller polls loadLookup.
+    done.catch(() => {});
     return { ...(await loadLookup(db, id))!, cached: false };
-  } finally {
-    running.delete(key);
   }
+  await done;
+  return { ...(await loadLookup(db, id))!, cached: false };
 }
 
 /**

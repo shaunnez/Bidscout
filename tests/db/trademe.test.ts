@@ -5,7 +5,7 @@ import type { FirecrawlClient } from "../../server/firecrawl.ts";
 import { parseRobots } from "../../server/robots.ts";
 import type { TradeMeSearcher } from "../../server/tmsearch.ts";
 import { saveTradeMeSettings } from "../../server/settings.ts";
-import { latestForLot, tradeMeLookup, tradeMeStatus } from "../../server/trademe.ts";
+import { failInterruptedLookups, latestForLot, loadLookup, tradeMeLookup, tradeMeStatus } from "../../server/trademe.ts";
 
 const url = process.env.BIDSCOUT_TEST_DATABASE_URL;
 if (!url) throw new Error("Run with npm run test:db");
@@ -270,5 +270,24 @@ test("Trade Me prices: Trade Me's own search, the next searcher when one fails, 
   const none: TradeMeSearcher = { name: "chromium", async search() { return { status: 200, pageSha: "x", cards: [], text: "Showing 0 results for 'zz'. No results found" }; } };
   const empty = await tradeMeLookup({ ...deps, searchers: [none] }, { lotId: 9001, userId: user, query: "zzqx laptop model" });
   assert.deepEqual([empty.status, empty.items.length], ["ok", 0]);
+
+  // In the background (what the API does): the reply comes at once as 'running', a second press gets the same lookup, and the answer lands on the row.
+  let release!: () => void;
+  const gate = new Promise<void>((ok) => (release = ok));
+  const slow: TradeMeSearcher = { name: "chromium", async search(u) { await gate; return chromium.search(u); } };
+  const bg = await tradeMeLookup({ ...deps, searchers: [slow] }, { lotId: 9001, userId: user, query: "HP ProBook 450 G8 i5-10210U", background: true });
+  assert.equal(bg.status, "running");
+  assert.equal((await tradeMeLookup({ ...deps, searchers: [slow] }, { lotId: 9001, userId: user, query: "HP ProBook 450 G8 i5-10210U", background: true })).id, bg.id);
+  release();
+  let done = bg;
+  for (let i = 0; i < 50 && done.status === "running"; i++) {
+    await new Promise((ok) => setTimeout(ok, 20));
+    done = await loadLookup(db, bg.id);
+  }
+  assert.equal(done.status, "ok");
+  assert.equal((await latestForLot(db, 9001))?.id, bg.id, "linked to the lot once finished");
+  await db.query(`INSERT INTO price_lookups (source, query, query_key, status) VALUES ('trademe', 'stuck', 'stuck', 'running')`);
+  await failInterruptedLookups(db);
+  assert.equal((await db.query(`SELECT status FROM price_lookups WHERE query='stuck'`)).rows[0].status, "failed", "a restart doesn't leave lookups running forever");
   await db.end();
 });
