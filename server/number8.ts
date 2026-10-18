@@ -35,6 +35,10 @@ export interface N8Auction {
   item_count?: string | number;
   url?: string;
   main_thumb_url?: string;
+  address?: string;
+  zip?: string;
+  intro?: string;
+  last_item_closes?: string;
 }
 
 export interface N8AuctionsPage {

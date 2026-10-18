@@ -60,7 +60,9 @@ function site() {
       current = { path: p, form: new URLSearchParams(Object.entries(form).map(([k, v]) => [k, String(v)])).toString() };
       if (p === "/api/auctions")
         return respond({ total: 2, page: 1, total_pages: 1, data: [
-          { id: "90", title: "Unreserved IT Equipment Liquidation - Rosedale", ends: inDays(2).toISOString().slice(0, 19) + "+1300", starts: inDays(-5).toISOString().slice(0, 19) + "+1300", city: "Rosedale", item_count: "2" },
+          { id: "90", title: "Unreserved IT &#38;#38; Equipment Liquidation - Rosedale", ends: inDays(2).toISOString().slice(0, 19) + "+1300", starts: inDays(-5).toISOString().slice(0, 19) + "+1300", city: "Rosedale", item_count: "2",
+            address: "Unit 4, 11 Orbit Drive", zip: "0632", last_item_closes: inDays(2.02).toISOString().slice(0, 19) + "+1300",
+            intro: "<p>Under Instructions from The Liquidators of Example Ltd (In Liquidation)</p><p>Contact staff@example.test with any questions.</p>" },
           { id: "10", title: "Closed - Old Sale", ends: inDays(-400).toISOString().slice(0, 19) + "+1300", city: "Drury", item_count: "5" },
         ] });
       if (p === "/api/getitems" && form.item_type === "itemlist") return respond(lots());
@@ -139,6 +141,27 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   assert.equal(Math.round(found.expected_high), Math.round(330 * 1.3225));
   assert.ok(found.spec_score > 0);
   assert.ok(found.expected_low <= found.expected_mid && found.expected_mid <= found.expected_high);
+
+  // Auctions: details from the auction list (title decoded, no contact line), lot and favourite counts.
+  const { listAuctions, getAuction } = await import("../../server/auctions.ts");
+  const live = await listAuctions(db, alex, "live");
+  assert.deepEqual(live.map((a) => a.id), [90]);
+  const a90 = live[0];
+  assert.equal(a90.title, "Unreserved IT & Equipment Liquidation - Rosedale");
+  assert.equal(a90.address, "Unit 4, 11 Orbit Drive");
+  assert.equal(a90.postcode, "0632");
+  assert.equal(a90.instructions, "Under Instructions from The Liquidators of Example Ltd (In Liquidation)");
+  assert.equal(a90.lots, 2);
+  assert.equal(a90.it_lots, 2);
+  assert.equal(a90.bids, 3);
+  assert.ok(a90.lots_close_at > a90.ends_at);
+  const closedAuctions = await listAuctions(db, alex, "closed");
+  const a80 = closedAuctions.find((a) => a.id === 80);
+  assert.ok(a80, "an auction known only from past sales is listed as closed");
+  assert.equal(a80.sold, 3);
+  assert.equal(Number(a80.sold_total), 960);
+  assert.equal((await getAuction(db, alex, 90))?.lots, 2);
+  assert.equal(await getAuction(db, alex, 12345), null);
 
   const terms = (await db.query(`SELECT premium_rate, gst_rate, premium_quote FROM auction_terms WHERE auction_id=90`)).rows[0];
   assert.equal(terms.premium_rate, 15);

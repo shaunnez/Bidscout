@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { FAULT_LABEL } from "../shared/specs/computer.ts";
-import { api, type Citation, type LotDetail, type SpecValue } from "./api.ts";
+import { api, type Auction, type Citation, type LotDetail, type SpecValue } from "./api.ts";
+import { auctionParts, saleReason } from "./auction.ts";
+import { lookupQuery } from "./lookup.ts";
+import { closingWindow, payBy } from "./Auctions.tsx";
 import { DealBadge, MAJOR, specChips, useNow } from "./Feed.tsx";
 import { money, nzDate, nzShort, timeLeft } from "./format.ts";
 
@@ -13,7 +16,9 @@ const SPEC_ORDER = ["deviceType", "make", "model", "cpu", "cpuGen", "ramGb", "st
 
 type CiteRequest = { title: string; load: () => Promise<Citation> };
 
-export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () => void; onOpenLot: (id: number) => void }) {
+export function LotDrawer({ id, onClose, onOpenLot, onOpenAuction }: {
+  id: number; onClose: () => void; onOpenLot: (id: number) => void; onOpenAuction: (a: Pick<Auction, "id" | "live">) => void;
+}) {
   const [d, setD] = useState<LotDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [cite, setCite] = useState<CiteRequest | null>(null);
@@ -66,7 +71,12 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
       <aside className="drawer" aria-label="Lot details">
         <div className="drawer-bar">
           <button className="icon" onClick={onClose} aria-label="Close">✕</button>
-          {l && <span className="bar-title">Lot {l.lot_number} · {l.auction_title}</span>}
+          {l && (
+            <span className="bar-title">
+              Lot {l.lot_number} ·{" "}
+              <button className="link" onClick={() => onOpenAuction({ id: l.auction_id, live: l.status === "open" })} title={l.auction_title}>{auctionParts(l.auction_title).headline}</button>
+            </span>
+          )}
           {l && <button className={`watch ${watched ? "on" : ""}`} onClick={toggleWatch}>{watched ? "★ Favourite" : "☆ Favourite"}</button>}
         </div>
         {err && <p className="err">{err}</p>}
@@ -150,6 +160,8 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
               </section>
             )}
 
+            <PriceLookup lot={l} />
+
             <section className="social-box">
               <div className="social-head">
                 <h3>Friends</h3>
@@ -169,6 +181,8 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
                 {d.watchers.length ? <>Favourited by {d.watchers.map((w) => w.display_name).join(", ")}.</> : "Nobody has favourited this lot."}
               </p>
             </section>
+
+            <AuctionBox lot={l} terms={d.terms} onOpen={() => onOpenAuction({ id: l.auction_id, live: l.status === "open" })} />
 
             {specs.length > 0 && (
               <section>
@@ -221,19 +235,29 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
               ) : (
                 <>
                   <p className="muted small">{l.comp_kind === "similar" ? "Similar machines (same type, CPU family and generation, RAM band and drive type)" : l.comp_kind === "spec" ? "Similar spec score (same form factor, within half a point)" : "Same make, model, CPU, RAM and storage"}{l.major_fault ? ", also with a major fault" : ", without major faults"}. All-in uses each sale's premium and 15% GST.</p>
-                  <table className="comps">
-                    <thead><tr><th>Closed</th><th>Lot</th><th className="r">Final bid</th><th className="r">All-in</th></tr></thead>
-                    <tbody>
-                      {d.comps.map((c) => (
-                        <tr key={c.id}>
-                          <td>{nzShort(c.closed_at)}</td>
-                          <td><button className="link" onClick={() => onOpenLot(c.id)}>{c.title}</button>{c.faults.length > 0 && <span className="muted small"> · {c.faults.map((f) => FAULT_LABEL[f] ?? f).join(", ")}</span>}</td>
-                          <td className="r"><button className="cite inline" onClick={() => setCite({ title: "Final bid", load: () => api.field(c.outcome_snapshot_id, `${c.outcome_path}.current_bid`) })}>{money(c.final_bid)}</button></td>
-                          <td className="r">{money(c.all_in)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div className="table-wrap">
+                    <table className="table compact">
+                      <thead><tr><th>Lot</th><th>Closed</th><th className="r">Final bid</th><th className="r">All-in</th></tr></thead>
+                      <tbody>
+                        {d.comps.map((c) => (
+                          <tr key={c.id}>
+                            <td>
+                              <div className="cell-lot">
+                                {c.thumb_url ? <img src={c.thumb_url} alt="" loading="lazy" /> : <span className="no-thumb" />}
+                                <div>
+                                  <button className="link" onClick={() => onOpenLot(c.id)}>{c.title}</button>
+                                  {c.faults.length > 0 && <div className="cell-tags">{c.faults.map((f) => <span key={f} className={`fault ${MAJOR.has(f) ? "major" : ""}`}>{FAULT_LABEL[f] ?? f}</span>)}</div>}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="nowrap">{nzShort(c.closed_at)}{c.bid_count ? <div className="muted small">{c.bid_count} bids</div> : null}</td>
+                            <td className="r num"><button className="cite inline" onClick={() => setCite({ title: "Final bid", load: () => api.field(c.outcome_snapshot_id, `${c.outcome_path}.current_bid`) })}>{money(c.final_bid)}</button></td>
+                            <td className="r num"><b>{money(c.all_in)}</b></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </>
               )}
             </section>
@@ -265,7 +289,6 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
             <section>
               <h3>Listing text</h3>
               <pre className="desc">{l.description || "No description."}</pre>
-              {d.terms?.payment_due && <p className="small muted">Payment due {d.terms.payment_due}.</p>}
               <p className="small muted">
                 Category {l.category ?? "not set"} · first seen {nzDate(l.first_seen)} · {d.revisions.length} listing version{d.revisions.length === 1 ? "" : "s"}
                 {l.detail_read_at ? ` · lot page read ${nzDate(l.detail_read_at)}` : ""}
@@ -370,5 +393,59 @@ function SourcePanel({ request, onClose }: { request: CiteRequest; onClose: () =
         )}
       </div>
     </aside>
+  );
+}
+
+/** The auction this lot is in: where to collect, when it closes, the fees, and links to it. */
+function AuctionBox({ lot, terms, onOpen }: { lot: LotDetail["lot"]; terms: LotDetail["terms"]; onOpen: () => void }) {
+  const { headline, location, unreserved } = auctionParts(lot.auction_title);
+  const reason = saleReason(lot.auction_title, lot.auction_instructions);
+  const closes = closingWindow({ ends_at: lot.auction_ends_at, lots_close_at: lot.auction_lots_close_at });
+  return (
+    <section className="auction-box">
+      <h3>Auction</h3>
+      <div className="tags">
+        {unreserved && <span className="tag">Unreserved</span>}
+        {reason && <span className="tag reason">{reason}</span>}
+      </div>
+      <p className="auction-box-title">{headline}</p>
+      <dl className="meta-list wide">
+        <dt>Pick up</dt><dd>{[lot.auction_address, location ?? lot.auction_city].filter(Boolean).join(", ") || "Not listed"}</dd>
+        {closes && <><dt>{lot.status === "closed" ? "Closed" : "Lots close"}</dt><dd>{closes}</dd></>}
+        <dt>Fees</dt><dd>{lot.premium_rate}% buyer's premium + {lot.gst_rate}% GST{lot.gst_assumed ? " (assumed)" : ""}</dd>
+        {terms?.payment_due && <><dt>Pay by</dt><dd>{payBy(terms.payment_due)}</dd></>}
+        {lot.auction_instructions && <><dt>Seller</dt><dd>{lot.auction_instructions}</dd></>}
+      </dl>
+      <div className="auction-actions">
+        <button className="ghost" onClick={onOpen}>All lots in this auction</button>
+        {lot.auction_url && <a className="ghost" href={lot.auction_url} target="_blank" rel="noreferrer">Auction on number8.bid ↗</a>}
+      </div>
+    </section>
+  );
+}
+
+/** Links to search other sites for a guide price. BidScout opens them; it doesn't read them. */
+function PriceLookup({ lot }: { lot: LotDetail["lot"] }) {
+  const [q, setQ] = useState(() => lookupQuery(lot));
+  useEffect(() => setQ(lookupQuery(lot)), [lot.id]);
+  const e = encodeURIComponent(q.trim());
+  const sites: Array<[string, string, string]> = [
+    ["Trade Me", `https://www.trademe.co.nz/a/search?search_string=${e}`, "Listings on now"],
+    ["eBay sold", `https://www.ebay.com/sch/i.html?_nkw=${e}&LH_Sold=1&LH_Complete=1`, "What it sold for"],
+    ["PriceSpy", `https://pricespy.co.nz/search?search=${e}`, "New price in NZ"],
+    ["Google", `https://www.google.com/search?q=${e}`, "Specs and SKU"],
+  ];
+  return (
+    <section className="lookup">
+      <h3>Check prices elsewhere</h3>
+      <input value={q} onChange={(ev) => setQ(ev.target.value)} aria-label="Search for" spellCheck={false} />
+      <div className="lookup-links">
+        {sites.map(([name, href, hint]) => (
+          <a key={name} href={href} target="_blank" rel="noreferrer" className={!q.trim() ? "disabled" : ""}>
+            <b>{name} ↗</b><span>{hint}</span>
+          </a>
+        ))}
+      </div>
+    </section>
   );
 }

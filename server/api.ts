@@ -11,6 +11,7 @@ import {
 } from "./auth.ts";
 import { isLoopback } from "./config.ts";
 import { appContext } from "./context.ts";
+import { getAuction, listAuctions } from "./auctions.ts";
 import { refreshLot } from "./scan/refresh.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
 import { getScanSettings, LIVE_HOURS, saveScanSettings } from "./settings.ts";
@@ -200,13 +201,23 @@ const snapshotMeta = (m: Record<string, unknown>) => ({
   redactions: m.redactions,
 });
 
+app.get<{ Querystring: { scope?: string } }>("/api/auctions", async (req) => ({
+  auctions: await listAuctions(db, uid(req), req.query.scope === "closed" ? "closed" : "live"),
+}));
+
+app.get<{ Params: { id: string } }>("/api/auctions/:id", async (req, reply) => {
+  const a = await getAuction(db, uid(req), Number(req.params.id));
+  return a ?? reply.code(404).send({ error: "No such auction" });
+});
+
 app.get("/api/lots", async (req) => searchLots(db, parseQuery(req.query as Record<string, unknown>), uid(req)));
 
 app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
   const id = Number(req.params.id);
   const r = await db.query(
     `SELECT ${LOT_COLUMNS}, l.description, l.images, l.bid_history, l.current_revision_id, l.machine_key, l.loose_key,
-            l.detail_read_at, l.outcome_snapshot_id, l.outcome_path, l.score_key, a.url AS auction_url, a.city AS auction_city
+            l.detail_read_at, l.outcome_snapshot_id, l.outcome_path, l.score_key, a.url AS auction_url, a.city AS auction_city,
+            a.address AS auction_address, a.lots_close_at AS auction_lots_close_at, a.instructions AS auction_instructions
      FROM lots l ${LOT_JOINS} WHERE l.id=$2`,
     [uid(req), id],
   );
@@ -245,7 +256,7 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
   const compCol = lot.comp_kind === "similar" ? "l.loose_key" : lot.comp_kind === "spec" ? "l.score_key" : "l.machine_key";
   const comps = compKey
     ? await db.query(
-        `SELECT l.id, l.title, l.final_bid, l.closed_at, l.buyer_premium, l.faults, l.ram_gb, l.storage_gb, l.cpu, l.item_url,
+        `SELECT l.id, l.title, l.final_bid, l.closed_at, l.buyer_premium, l.faults, l.ram_gb, l.storage_gb, l.cpu, l.item_url, l.thumb_url, l.bid_count,
                 l.outcome_snapshot_id, l.outcome_path, a.title AS auction_title,
                 l.final_bid * (1 + COALESCE(l.buyer_premium,0)/100.0) * 1.15 AS all_in
          FROM lots l JOIN auctions a ON a.id=l.auction_id

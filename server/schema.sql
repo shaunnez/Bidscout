@@ -365,3 +365,11 @@ CREATE TRIGGER photo_values_immutable BEFORE UPDATE ON photo_values
 ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS photos_read int NOT NULL DEFAULT 0;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at timestamptz;
+
+-- Auction details shown on the Auctions page (from the auction list response).
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS address text;
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS postcode text;
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS instructions text;
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS lots_close_at timestamptz;
+-- Titles stored before double-escaped entities were decoded.
+UPDATE auctions SET title = replace(replace(replace(title, '&#38;', '&'), '&#39;', ''''), '&amp;', '&') WHERE title ~ '&(#38|#39|amp);';

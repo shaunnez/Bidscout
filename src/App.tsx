@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { account, api, setOnSignedOut, type Me, type ScanRun, type Summary } from "./api.ts";
+import { account, api, setOnSignedOut, type Auction, type Me, type ScanRun, type Summary } from "./api.ts";
+import { Auctions } from "./Auctions.tsx";
 import { Feed } from "./Feed.tsx";
 import { ago } from "./format.ts";
 import { Login } from "./Login.tsx";
@@ -8,12 +9,12 @@ import { Profile } from "./Profile.tsx";
 import { Scans } from "./Scans.tsx";
 import { Settings } from "./Settings.tsx";
 
-export type Route = { page: "deals" | "history" | "watch" | "scans" | "settings" | "profile"; params: URLSearchParams };
+export type Route = { page: "deals" | "auctions" | "history" | "watch" | "scans" | "settings" | "profile"; params: URLSearchParams };
 
 function readHash(): Route {
   const raw = window.location.hash.replace(/^#\/?/, "");
   const [path, qs] = raw.split("?");
-  const page = (["history", "watch", "scans", "settings", "profile"] as const).find((p) => p === path) ?? "deals";
+  const page = (["auctions", "history", "watch", "scans", "settings", "profile"] as const).find((p) => p === path) ?? "deals";
   return { page, params: new URLSearchParams(qs ?? "") };
 }
 
@@ -83,7 +84,7 @@ function SignedIn({ me, setMe }: { me: Me; setMe: (m: Me | null) => void }) {
 
   const submitSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    const page = route.page === "scans" || route.page === "settings" || route.page === "profile" ? "deals" : route.page;
+    const page = route.page === "scans" || route.page === "settings" || route.page === "profile" || route.page === "auctions" ? "deals" : route.page;
     const p = new URLSearchParams(page === route.page ? route.params : undefined);
     if (q.trim()) p.set("q", q.trim());
     else p.delete("q");
@@ -93,6 +94,8 @@ function SignedIn({ me, setMe }: { me: Me; setMe: (m: Me | null) => void }) {
 
   const openLot = useCallback((id: number) => setParams((p) => p.set("lot", String(id))), [setParams]);
   const closeLot = useCallback(() => setParams((p) => p.delete("lot")), [setParams]);
+  /** An auction's lots: live ones in Live deals, finished ones in Past sales. */
+  const openAuction = useCallback((a: Pick<Auction, "id" | "live">) => go(a.live ? "deals" : "history", new URLSearchParams({ auction: String(a.id) })), [go]);
   const progress = useMemo(() => {
     const r = scan.run;
     if (!r || !scan.active) return null;
@@ -113,7 +116,7 @@ function SignedIn({ me, setMe }: { me: Me; setMe: (m: Me | null) => void }) {
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search lots: thinkpad t14, rtx 3060, 27 inch, forklift…" aria-label="Search lots" />
         </form>
         <nav className="tabs">
-          {([["deals", "Live deals"], ["history", "Past sales"], ["watch", `Favourites${summary?.watching ? ` (${summary.watching})` : ""}`], ["scans", "Scans"]] as const).map(([p, label]) => (
+          {([["deals", "Live deals"], ["auctions", "Auctions"], ["history", "Past sales"], ["watch", `Favourites${summary?.watching ? ` (${summary.watching})` : ""}`], ["scans", "Scans"]] as const).map(([p, label]) => (
             <a key={p} href={`#/${p === "deals" ? "" : p}`} className={route.page === p ? "on" : ""} onClick={(e) => { e.preventDefault(); go(p); }}>{label}</a>
           ))}
         </nav>
@@ -141,6 +144,8 @@ function SignedIn({ me, setMe }: { me: Me; setMe: (m: Me | null) => void }) {
       <main className="body">
         {route.page === "scans" ? (
           <Scans scan={scan} />
+        ) : route.page === "auctions" ? (
+          <Auctions openAuction={openAuction} />
         ) : route.page === "settings" ? (
           <Settings me={me} />
         ) : route.page === "profile" ? (
@@ -150,7 +155,7 @@ function SignedIn({ me, setMe }: { me: Me; setMe: (m: Me | null) => void }) {
         )}
       </main>
 
-      {lotId && <LotDrawer id={lotId} onClose={closeLot} onOpenLot={openLot} />}
+      {lotId && <LotDrawer id={lotId} onClose={closeLot} onOpenLot={openLot} onOpenAuction={openAuction} />}
     </div>
   );
 }

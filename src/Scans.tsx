@@ -77,25 +77,27 @@ export function Scans({ scan }: { scan: { run: ScanRun | null; active: boolean; 
       {msg && <p className="err">{msg}</p>}
 
       <h2 className="h2">Recent scans</h2>
-      <table className="runs">
+      <div className="table-wrap">
+      <table className="table">
         <thead><tr><th>#</th><th>Kind</th><th>Started</th><th>Result</th><th className="r">Requests</th><th className="r">Lots</th><th className="r">New</th><th className="r">Changed</th><th className="r">Closed</th><th>Note</th></tr></thead>
         <tbody>
           {runs.map((r) => (
             <tr key={r.id}>
-              <td>{r.id}</td>
-              <td>{r.kind === "live" ? "Live" : "Past sales"}</td>
-              <td>{nzDate(r.started_at ?? r.created_at)}</td>
+              <td className="muted num">{r.id}</td>
+              <td className="nowrap"><b>{r.kind === "live" ? "Live" : "Past sales"}</b>{r.trigger === "schedule" ? <div className="muted small">scheduled</div> : null}</td>
+              <td className="nowrap">{nzDate(r.started_at ?? r.created_at)}</td>
               <td><span className={`state ${r.state}`}>{r.state}</span></td>
-              <td className="r">{r.requests}{r.retries ? <small className="muted"> ({r.retries} retried)</small> : null}</td>
-              <td className="r">{r.lots_seen.toLocaleString()}</td>
-              <td className="r">{r.lots_new.toLocaleString()}</td>
-              <td className="r">{r.lots_changed.toLocaleString()}</td>
-              <td className="r">{r.lots_closed.toLocaleString()}</td>
-              <td className="small">{r.stop_reason ?? r.last_error ?? ""}</td>
+              <td className="r num">{r.requests}{r.retries ? <small className="muted"> ({r.retries} retried)</small> : null}</td>
+              <td className="r num">{r.lots_seen.toLocaleString()}</td>
+              <td className="r num">{r.lots_new.toLocaleString()}</td>
+              <td className="r num">{r.lots_changed.toLocaleString()}</td>
+              <td className="r num">{r.lots_closed.toLocaleString()}</td>
+              <td className="small muted">{r.stop_reason ?? r.last_error ?? ""}</td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

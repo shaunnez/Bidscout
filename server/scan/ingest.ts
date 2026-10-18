@@ -35,27 +35,46 @@ function semanticFields(row: N8Lot) {
   };
 }
 
+/** Auction titles arrive escaped twice ("&#38;#38;"), so decode until nothing changes. */
+export function auctionTitle(raw: unknown): string {
+  let t = cleanText(raw);
+  for (let i = 0; i < 2 && /&#?\w+;/.test(t); i++) t = cleanText(t);
+  return t.replace(/^Closed\s*-\s*/i, "");
+}
+
+/**
+ * Only the "Under instructions from …" lines of an auction's intro: who is selling and why.
+ * The rest is contact details (already redacted) and is not shown.
+ */
+export function auctionInstructions(intro: unknown): string | null {
+  const lines = cleanText(intro).split("\n").filter((l) => /^under instructions/i.test(l) && !/\[redacted/.test(l));
+  return lines.length ? lines.join("\n") : null;
+}
+
 export async function upsertAuction(c: Tx, a: N8Auction, snapshotId: number, path: string, now: Date) {
   const id = Number(a.id);
-  const title = cleanText(a.title).replace(/^Closed\s*-\s*/i, "");
+  const title = auctionTitle(a.title);
   const fields = { title, starts: a.starts ?? null, ends: a.ends ?? null, city: a.city ?? null, count: a.item_count ?? null };
   await c.query(
-    `INSERT INTO auctions (id, title, starts_at, ends_at, city, region, item_count, url, thumb_url, list_hash, snapshot_id, snapshot_path, first_seen, last_seen)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+    `INSERT INTO auctions (id, title, starts_at, ends_at, city, region, item_count, url, thumb_url, list_hash, snapshot_id, snapshot_path,
+       first_seen, last_seen, address, postcode, instructions, lots_close_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$15,$16,$17)
      ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title, starts_at=EXCLUDED.starts_at, ends_at=EXCLUDED.ends_at,
        city=EXCLUDED.city, region=EXCLUDED.region, item_count=EXCLUDED.item_count, url=EXCLUDED.url,
        thumb_url=EXCLUDED.thumb_url, list_hash=EXCLUDED.list_hash, snapshot_id=EXCLUDED.snapshot_id,
-       snapshot_path=EXCLUDED.snapshot_path, last_seen=EXCLUDED.last_seen`,
+       snapshot_path=EXCLUDED.snapshot_path, last_seen=EXCLUDED.last_seen, address=EXCLUDED.address,
+       postcode=EXCLUDED.postcode, instructions=EXCLUDED.instructions, lots_close_at=EXCLUDED.lots_close_at`,
     [id, title, isoToDate(a.starts), isoToDate(a.ends), a.city ?? null,
       a.state_abbreviation ?? null, num(a.item_count), a.url ? new URL(a.url, "https://www.number8.bid").toString() : null,
-      a.main_thumb_url ?? null, hash(fields), snapshotId, path, now],
+      a.main_thumb_url ?? null, hash(fields), snapshotId, path, now,
+      cleanText(a.address) || null, cleanText(a.zip) || null, auctionInstructions(a.intro), isoToDate(a.last_item_closes)],
   );
 }
 
 async function ensureAuctionStub(c: Tx, row: N8Lot, snapshotId: number, path: string) {
   await c.query(
     `INSERT INTO auctions (id, title, snapshot_id, snapshot_path) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO NOTHING`,
-    [Number(row.auction_id), cleanText(row.auction_title ?? `Auction ${row.auction_id}`).replace(/^Closed\s*-\s*/i, ""), snapshotId, `${path}.auction_title`],
+    [Number(row.auction_id), auctionTitle(row.auction_title ?? `Auction ${row.auction_id}`), snapshotId, `${path}.auction_title`],
   );
 }
 
