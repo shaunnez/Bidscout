@@ -1,4 +1,6 @@
 import { appContext } from "./context.ts";
+import { runAutoPriceLoop } from "./autoprice.ts";
+import { parallelSearcher } from "./tmsearch.ts";
 import { scheduleTick } from "./schedule.ts";
 import { reparseStale } from "./scan/reparse.ts";
 import { workOneRun } from "./scan/runner.ts";
@@ -13,6 +15,8 @@ export async function runWorkerLoop(deps: Awaited<ReturnType<typeof appContext>>
   } catch (e) {
     log(`re-parse error: ${(e as Error).message}`);
   }
+  // Automatic Trade Me prices for open IT lots, through Parallel (Settings turns them on).
+  if (deps.parallel) void runAutoPriceLoop({ db: deps.db, parallel: parallelSearcher(deps.parallel), signal }, log);
   let lastTick = 0;
   while (!signal?.aborted) {
     if (Date.now() - lastTick > 60_000) {

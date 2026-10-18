@@ -161,7 +161,7 @@ export interface TradeMeLookup {
   found: number;
   candidates: number | null;
   blocked: number | null;
-  /** "trademe-search:chromium", "trademe-search:firecrawl", "web-search" or "links"; null on old lookups (web search). */
+  /** "trademe-search:parallel", "trademe-search:chromium", "trademe-search:firecrawl", "web-search" or "links"; null on old lookups (web search). */
   method: string | null;
   /** The web searches run; empty for pasted links; null for lookups saved before this was recorded (web searches). */
   queries: string[] | null;
@@ -340,6 +340,11 @@ export interface ScanSettings {
 export interface TradeMeSettings {
   enabled: boolean;
   dailyLimit: number;
+  /** Automatic lookups for every open IT lot, through Parallel. */
+  autoEnabled: boolean;
+  autoDailyLimit: number;
+  /** Why automatic lookups turned themselves off, and when. */
+  autoStopped: { reason: string; at: string } | null;
 }
 
 export interface SettingsResponse {
@@ -349,6 +354,9 @@ export interface SettingsResponse {
   trademeLimitOptions: number[];
   trademeKeySet: boolean;
   parallelKeySet: boolean;
+  autoLimitOptions: number[];
+  /** Open IT lots, how many have a Trade Me answer under 3 days old, and today's automatic lookups. */
+  autoProgress: { openLots: number; priced: number; used: number; dailyLimit: number };
 }
 
 /** One Trade Me results page read through Parallel, for the admin's test; not stored. */

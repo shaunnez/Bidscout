@@ -4,7 +4,8 @@ import { connect, migrate } from "../../server/db.ts";
 import type { FirecrawlClient } from "../../server/firecrawl.ts";
 import { parseRobots } from "../../server/robots.ts";
 import type { TradeMeSearcher } from "../../server/tmsearch.ts";
-import { saveTradeMeSettings } from "../../server/settings.ts";
+import { autoPriceTick, autoProgress } from "../../server/autoprice.ts";
+import { getTradeMeSettings, saveTradeMeSettings } from "../../server/settings.ts";
 import { failInterruptedLookups, latestForLot, loadLookup, tradeMeLookup, tradeMeStatus } from "../../server/trademe.ts";
 
 const url = process.env.BIDSCOUT_TEST_DATABASE_URL;
@@ -292,5 +293,89 @@ test("Trade Me prices: Trade Me's own search, the next searcher when one fails, 
   await db.query(`INSERT INTO price_lookups (source, query, query_key, status) VALUES ('trademe', 'stuck', 'stuck', 'running')`);
   await failInterruptedLookups(db);
   assert.equal((await db.query(`SELECT status FROM price_lookups WHERE query='stuck'`)).rows[0].status, "failed", "a restart doesn't leave lookups running forever");
+  await db.end();
+});
+
+test("Automatic prices: open IT lots only, one search per shared query, own daily limit, stops when Trade Me refuses", async () => {
+  const db = connect(url);
+  await migrate(db);
+  await db.query(`INSERT INTO auctions (id, title) VALUES (77, 'Test') ON CONFLICT DO NOTHING`);
+  const lot = (id: number, title: string, device: string, make: string, model: string, status = "open", isIt = true) =>
+    db.query(`INSERT INTO lots (id, auction_id, title, device_type, status, is_it, make, model, ends_at) VALUES ($1, 77, $2, $3, $4, $5, $6, $7, now() + interval '1 day')`,
+      [id, title, device, status, isIt, make, model]);
+  // Only this test's lots are open IT lots (the pipeline test leaves some behind).
+  await db.query(`UPDATE lots SET status='closed' WHERE is_it AND status='open'`);
+  await lot(7001, "Dell Latitude 5420 Laptop", "laptop", "Dell", "Latitude 5420");
+  await lot(7002, "Dell Latitude 5420 Laptop (2)", "laptop", "Dell", "Latitude 5420");
+  await lot(7003, "HP EliteDesk 800 G4 Desktop", "desktop", "HP", "EliteDesk 800 G4");
+  await lot(7004, "Dell Latitude 7490 Laptop", "laptop", "Dell", "Latitude 7490", "closed");
+  await lot(7005, "Pallet of office chairs", "", "", "", "open", false);
+
+  const LAP = "https://www.trademe.co.nz/a/marketplace/computers/laptops/laptops/dell/listing";
+  const searched: string[] = [];
+  let refuse = false;
+  const parallel: TradeMeSearcher = {
+    name: "parallel",
+    async search(u) {
+      const q = decodeURIComponent(u.split("search_string=")[1]!);
+      searched.push(q);
+      if (refuse) return { cards: [], pageSha: "", status: 406, text: "" };
+      const cards = [1, 2, 3].map((n) => ({ url: `${LAP}/${q.length * 10 + n}`, listingId: String(q.length * 10 + n), text: `Auckland Closes: Fri, 23 Oct ${q} i5 16GB Buy Now $${400 + n}.00` }));
+      return { cards, pageSha: "sha", status: 200, text: "" };
+    },
+  };
+  const deps = { db, parallel, gapMs: 0, sleep: async () => {} };
+
+  await saveTradeMeSettings(db, { enabled: true, autoEnabled: false }, null);
+  assert.equal((await autoPriceTick(deps)).looked, 0);
+  assert.equal(searched.length, 0, "nothing runs while automatic prices are off");
+
+  const buttonUsed = (await tradeMeStatus(db, { firecrawl: null, searchers: [parallel] })).used;
+  await saveTradeMeSettings(db, { autoEnabled: true, autoDailyLimit: 100 }, null);
+  const r = await autoPriceTick(deps);
+  assert.deepEqual([r.looked, r.reused, r.failed, r.stopped], [2, 1, 0, null]);
+  assert.deepEqual(searched.sort(), ["Dell Latitude 5420", "HP EliteDesk 800 G4"], "closed and non-IT lots are skipped; two lots sharing a search share one lookup, even run side by side");
+  for (const id of [7001, 7002, 7003]) assert.equal((await latestForLot(db, id))?.status, "ok", `lot ${id} has prices`);
+  assert.equal((await latestForLot(db, 7004)), null);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM price_lookups WHERE origin='auto'`)).rows[0].n, 2);
+  assert.equal((await tradeMeStatus(db, { firecrawl: null, searchers: [parallel] })).used, buttonUsed, "automatic lookups don't use up the button's daily limit");
+  const p = await autoProgress(db);
+  assert.deepEqual([p.openLots, p.priced, p.used, p.dailyLimit], [3, 3, 2, 100]);
+
+  searched.length = 0;
+  assert.equal((await autoPriceTick(deps)).looked, 0);
+  assert.equal(searched.length, 0, "lots with an answer under 3 days old wait");
+
+  // Several at once, but never more than the concurrency, and each search once.
+  await lot(7010, "Acer Aspire 5 Laptop", "laptop", "Acer", "Aspire 5");
+  await lot(7011, "Asus VivoBook 15 Laptop", "laptop", "Asus", "VivoBook 15");
+  await lot(7012, "Lenovo IdeaPad 3 Laptop", "laptop", "Lenovo", "IdeaPad 3");
+  await lot(7013, "Lenovo IdeaPad 3 Laptop (2)", "laptop", "Lenovo", "IdeaPad 3");
+  let inFlight = 0;
+  let most = 0;
+  const slow: TradeMeSearcher = {
+    name: "parallel",
+    async search(u) {
+      most = Math.max(most, ++inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      return parallel.search(u);
+    },
+  };
+  searched.length = 0;
+  const many = await autoPriceTick({ ...deps, parallel: slow, concurrency: 2 });
+  assert.deepEqual([many.looked, many.reused, most], [3, 1, 2]);
+  assert.deepEqual(searched.sort(), ["Acer Aspire 5", "Asus VivoBook 15", "Lenovo IdeaPad 3"]);
+
+  // A new lot, and Trade Me refuses: automatic prices turn themselves off and say why.
+  await lot(7006, "Lenovo ThinkCentre M720q", "mini", "Lenovo", "ThinkCentre M720q");
+  refuse = true;
+  const stopped = await autoPriceTick(deps);
+  assert.match(stopped.stopped ?? "", /refused Parallel/);
+  const s = await getTradeMeSettings(db);
+  assert.equal(s.autoEnabled, false);
+  assert.match(s.autoStopped?.reason ?? "", /HTTP 406/);
+  assert.equal((await saveTradeMeSettings(db, { autoEnabled: true }, null)).autoStopped, null, "turning it back on clears the reason");
+  await saveTradeMeSettings(db, { autoEnabled: false }, null);
   await db.end();
 });

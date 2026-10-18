@@ -55,24 +55,25 @@ The repo has a `Dockerfile` and `railway.toml`. Shaun runs the deploy himself (`
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`: a reference to the Postgres service.
    - `BIDSCOUT_PASSWORD`: the password of the first admin, user `admin` (or `BIDSCOUT_ADMIN_USERNAME`), created on first start. After that, people and passwords are managed in Settings.
    - `BIDSCOUT_CONTACT`: the email sent to number 8 solutions in the User-Agent.
-   - `FIRECRAWL_API_KEY` (optional): Trade Me searches go through Firecrawl first, and pasted listing links need it. Without it, the image's Chromium runs Trade Me searches. `FIRECRAWL_API_URL` points at a self-hosted Firecrawl instead.
-   - `PARALLEL_API_KEY` (optional): turns on an admin-only "Test Parallel" button in Settings that reads one Trade Me results page through Parallel's Extract API and reports how many listings and prices came back, with links to compare (nothing stored). The Trade Me button doesn't use Parallel yet.
+   - `FIRECRAWL_API_KEY` (optional): Trade Me searches go through Firecrawl (after Parallel, if set), and pasted listing links need it. Without either, the image's Chromium runs Trade Me searches. `FIRECRAWL_API_URL` points at a self-hosted Firecrawl instead.
+   - `PARALLEL_API_KEY` (optional): Trade Me searches go through Parallel's Extract API first (about $0.001 a page), and automatic prices for open IT lots can be turned on in Settings. Also turns on an admin-only "Test Parallel" button that reads one results page and reports how many listings and prices came back (nothing stored).
 4. Under the service's Networking settings, generate a public domain.
 5. Deploy: connect the repo so every push to `main` deploys, or run `railway up` from this folder. The health check is `/api/health`. The schema is applied at start.
 
 Keep `numReplicas = 1`: the worker runs inside the one instance, and only one scan may run at a time.
 
-## Trade Me prices (`server/trademe.ts`, `server/tmsearch.ts`, `server/firecrawl.ts`)
+## Trade Me prices (`server/trademe.ts`, `server/tmsearch.ts`, `server/autoprice.ts`)
 
-On demand only: one press of the button in a lot's drawer, by a signed-in person, when an admin has turned it on.
+A press of the button in a lot's drawer, by a signed-in person, when an admin has turned it on; or automatic prices (step 6).
 
 1. **Trade Me's own search.** BidScout loads Trade Me's search results page for the lot's search text and reads the listing cards on it: title, location, closing date, and the price (Buy Now, current bid with reserve status, or asking price; shipping amounts ignored). If fewer than 3 relevant listings turn up, it searches again with just the make and model. At most two results pages per lookup.
-   - Through Firecrawl when `FIRECRAWL_API_KEY` is set, otherwise (or if that fails) a plain headless Chromium on the server (`CHROMIUM_PATH`; the Docker image installs `chromium`). No disguise: if Trade Me blocks it, the lookup fails rather than retrying around the block.
-   - Trade Me's robots.txt asks crawlers not to use its search pages. Shaun chose to use them for this (18 Oct 2026), on a button press only, cached and under a daily limit.
+   - Through Parallel when `PARALLEL_API_KEY` is set, then Firecrawl when `FIRECRAWL_API_KEY` is set, otherwise (or if those fail) a plain headless Chromium on the server (`CHROMIUM_PATH`; the Docker image installs `chromium`). No disguise: if Trade Me blocks it, the lookup fails rather than retrying around the block.
+   - Trade Me's robots.txt asks crawlers not to use its search pages. Shaun chose to use them for this (18 Oct 2026), cached and under daily limits.
 2. **Relevant listings only.** Accessories (batteries, chargers, cases…) are dropped unless the lot is one, and results in the lot's own Trade Me category are preferred. Faulty or for-parts listings are tagged and left out of the summary unless the lot has a major fault too.
 3. **Quoted prices.** Each price (and Buy Now) opens the card text it came from, with contact details removed, and the results page's SHA-256. The page itself is not stored.
 4. **Fallbacks.** If Trade Me's search can't be read and there's a Firecrawl key, a web search limited to trademe.co.nz finds listing pages instead (robots.txt checked for each, up to 5 read). You can also paste up to 5 listing links to have just those pages read (needs Firecrawl).
-5. **Reuse and limit.** The same search text reuses the answer for 3 days. The group shares a daily limit (Settings: 10, 20 or 50; failed lookups count).
+5. **Reuse and limit.** The same search text reuses the answer for 3 days. The group shares a daily limit for button presses (Settings: 10, 20 or 50; failed lookups count).
+6. **Automatic prices** (needs `PARALLEL_API_KEY`; off until an admin turns it on in Settings). Every open IT lot gets the lookup the button would run, through Parallel only, about 2 searches a second (up to 100 running at once; Parallel allows 600 requests a minute, with retries on 429), under its own daily limit (100 to 1000). Lots sharing a search share one answer; answers are refreshed after 3 days while the lot is open; new lots are picked up after each scan. If Trade Me refuses Parallel, or 5 lookups in a row fail, it turns itself off and Settings says why.
 
 Trade Me's terms still apply to this use; ask Trade Me before relying on it heavily. Trade Me's API is not an option: it is only for sellers in the trade.
 

@@ -106,3 +106,17 @@ test("Parallel: Trade Me's refusal is reported as blocked; an empty page shows h
   const badKey = await probeSearcher(parallelSearcher(parallelWith(401, { type: "error", error: { message: "nope" } })), "t480");
   assert.deepEqual([badKey.verdict, badKey.message], ["failed", "Parallel: the Parallel key was refused"]);
 });
+
+test("Parallel: a 429 waits and tries again, up to three times", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  const ok = { extract_id: "x", results: [{ url: "u", full_content: `[Auckland ThinkPad T480 Buy Now $350.00](${TM}/21)` }], errors: [] };
+  const p = new Parallel("k", {
+    sleep: async (ms) => { waits.push(ms); },
+    fetch: async () => (++calls < 3 ? new Response("{}", { status: 429, headers: { "retry-after": "2" } }) : new Response(JSON.stringify(ok), { status: 200 })),
+  });
+  const r = await probeSearcher(parallelSearcher(p), "t480");
+  assert.deepEqual([r.verdict, calls, waits], ["ok", 3, [2000, 2000]]);
+  const always = new Parallel("k", { sleep: async () => {}, fetch: async () => new Response("{}", { status: 429 }) });
+  assert.equal((await probeSearcher(parallelSearcher(always), "t480")).message, "Parallel: too many requests (rate limit)");
+});

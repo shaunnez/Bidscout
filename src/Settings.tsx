@@ -5,7 +5,7 @@ import { nzDate } from "./format.ts";
 export function Settings({ me }: { me: Me }) {
   const [scan, setScan] = useState<ScanSettings | null>(null);
   const [hours, setHours] = useState<number[]>([]);
-  const [tm, setTm] = useState<Pick<SettingsResponse, "trademe" | "trademeLimitOptions" | "trademeKeySet" | "parallelKeySet"> | null>(null);
+  const [tm, setTm] = useState<Pick<SettingsResponse, "trademe" | "trademeLimitOptions" | "trademeKeySet" | "parallelKeySet" | "autoLimitOptions" | "autoProgress"> | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [probeQuery, setProbeQuery] = useState("thinkpad t480");
@@ -65,8 +65,8 @@ export function Settings({ me }: { me: Me }) {
           <h3>Trade Me prices</h3>
           <p className="muted small">
             A button on each lot that runs Trade Me's own search for it (one results page, two at most) and reads the listings
-            shown: title, price, location and closing date, each price quoted from the results page. It runs only when someone
-            presses the button, with a plain browser; if Trade Me blocks it, it stops. Answers are reused for 3 days.
+            shown: title, price, location and closing date, each price quoted from the results page. It runs when someone
+            presses the button (or automatically, below), through Parallel when it's set up, else a plain browser; if Trade Me blocks it, it stops. Answers are reused for 3 days.
             Trade Me's robots.txt asks bots not to use its search pages; you chose to use them for this (18 Oct 2026).
           </p>
           {!tm.trademeKeySet && <p className="warn small">Needs Chromium (included in the Docker image) or a Firecrawl API key (FIRECRAWL_API_KEY).</p>}
@@ -81,10 +81,36 @@ export function Settings({ me }: { me: Me }) {
             </select>
           </label>
           <p className="muted small">Pasting listing links (reading those listing pages) needs a Firecrawl key. Trade Me's terms still apply; ask them if you plan to use it a lot.</p>
+          {tm.parallelKeySet && (
+            <div className="probe">
+              <h4>Automatic prices</h4>
+              <p className="muted small">
+                Looks up every open IT lot the way the button would, through Parallel only, about 2 searches a second.
+                Lots that need the same search share one answer, and answers are kept for 3 days, then refreshed while the lot is
+                still open. New lots are picked up after each scan. If Trade Me refuses Parallel, or lookups keep failing, it turns
+                itself off and says why here.
+              </p>
+              <label className="check">
+                <input type="checkbox" disabled={!me.is_admin || !tm.trademe.enabled} checked={tm.trademe.autoEnabled}
+                  onChange={(e) => run(() => account.saveTradeMe({ autoEnabled: e.target.checked }), e.target.checked ? "Automatic prices on." : "Automatic prices off.")} />
+                Look up open IT lots automatically
+              </label>
+              <label className="select"><span>Automatic lookups per day</span>
+                <select disabled={!me.is_admin} value={tm.trademe.autoDailyLimit} onChange={(e) => run(() => account.saveTradeMe({ autoDailyLimit: Number(e.target.value) }), "Saved.")}>
+                  {tm.autoLimitOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </label>
+              <p className="muted small">
+                {tm.autoProgress.priced} of {tm.autoProgress.openLots} open IT lots have Trade Me prices · {tm.autoProgress.used} of {tm.autoProgress.dailyLimit} automatic lookups used in the last 24 hours.
+                {" "}Each lookup reads one or two pages through Parallel (about $0.001 a page).
+              </p>
+              {tm.trademe.autoStopped && <p className="warn small">Stopped {nzDate(tm.trademe.autoStopped.at)}: {tm.trademe.autoStopped.reason}</p>}
+            </div>
+          )}
           {me.is_admin && tm.parallelKeySet && (
             <div className="probe">
               <h4>Test Parallel</h4>
-              <p className="muted small">Reads one Trade Me results page through Parallel (from Parallel's servers) and says whether listings and prices came back. Nothing is stored, and the button above doesn't use Parallel yet.</p>
+              <p className="muted small">Reads one Trade Me results page through Parallel (from Parallel's servers) and says whether listings and prices came back. Nothing is stored.</p>
               <div className="probe-row">
                 <input value={probeQuery} onChange={(e) => setProbeQuery(e.target.value)} placeholder="Search words" aria-label="Search words" />
                 <button disabled={probe.busy || !probeQuery.trim()} onClick={runProbe}>{probe.busy ? "Testing… (up to a minute)" : "Test"}</button>
