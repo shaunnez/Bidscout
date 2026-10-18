@@ -189,7 +189,7 @@ app.delete<{ Params: { id: string } }>("/api/admin/users/:id", { preHandler: req
 
 app.get("/api/settings", async () => ({
   scan: await getScanSettings(db), liveHourOptions: LIVE_HOURS,
-  trademe: await getTradeMeSettings(db), trademeLimitOptions: TRADEME_LIMITS, trademeKeySet: !!ctx.firecrawl,
+  trademe: await getTradeMeSettings(db), trademeLimitOptions: TRADEME_LIMITS, trademeKeySet: !!ctx.firecrawl || ctx.tradeMeSearchers.length > 0, trademeMethods: ctx.tradeMeSearchers.map((x) => x.name),
 }));
 
 app.put<{ Body: { scan?: Record<string, unknown>; trademe?: Record<string, unknown> } }>("/api/settings", { preHandler: requireAdmin }, async (req) => ({
@@ -280,7 +280,7 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
   return {
     lot, specs: specs.rows, observations: obs.rows, terms: terms.rows[0] ?? null, revisions: revs.rows, comps: comps.rows,
     watchers: watchers.rows, friendBids: friendBids.rows, photoValues: photoValues.rows,
-    tradeMe: { ...(await tradeMeStatus(db, ctx.firecrawl)), latest: await latestForLot(db, id) },
+    tradeMe: { ...(await tradeMeStatus(db, { firecrawl: ctx.firecrawl, searchers: ctx.tradeMeSearchers })), latest: await latestForLot(db, id) },
   };
 });
 
@@ -289,7 +289,7 @@ app.post<{ Params: { id: string }; Body: { query?: string; links?: string[] } }>
   try {
     const links = Array.isArray(req.body?.links) ? req.body.links.slice(0, 20).map(String) : undefined;
     return await tradeMeLookup(
-      { db, firecrawl: ctx.firecrawl, robots: ctx.tradeMeRobots },
+      { db, firecrawl: ctx.firecrawl, robots: ctx.tradeMeRobots, searchers: ctx.tradeMeSearchers },
       { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? ""), links },
     );
   } catch (e) {

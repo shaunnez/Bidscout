@@ -444,3 +444,6 @@ CREATE INDEX IF NOT EXISTS price_lookup_lots_lot ON price_lookup_lots (lot_id, u
 ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS candidates int;
 ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS queries text[];
 ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS blocked int;
+-- How a lookup found its listings: Trade Me's own search (by Firecrawl or Chromium), a web search, or pasted links.
+ALTER TABLE price_lookups ADD COLUMN IF NOT EXISTS method text;
+ALTER TABLE price_lookup_items ADD COLUMN IF NOT EXISTS reserve text;

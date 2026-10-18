@@ -3,6 +3,7 @@ import test from "node:test";
 import { connect, migrate } from "../../server/db.ts";
 import type { FirecrawlClient } from "../../server/firecrawl.ts";
 import { parseRobots } from "../../server/robots.ts";
+import type { TradeMeSearcher } from "../../server/tmsearch.ts";
 import { saveTradeMeSettings } from "../../server/settings.ts";
 import { latestForLot, tradeMeLookup, tradeMeStatus } from "../../server/trademe.ts";
 
@@ -37,6 +38,9 @@ function fakeFirecrawl(opts: { outOfCredits?: boolean; pagesFail?: boolean; slow
         ],
         credits: 2,
       };
+    },
+    async page() {
+      throw new Error("not used");
     },
     async scrape(u) {
       calls.push(`scrape ${u}`);
@@ -105,7 +109,7 @@ test("Trade Me prices: off until enabled, reads only robots-allowed listings, co
 
   // Two people, different searches, one slot left: only one goes to Firecrawl.
   await saveTradeMeSettings(db, { dailyLimit: 10 }, user);
-  const usedNow = (await tradeMeStatus(db, fc)).used;
+  const usedNow = (await tradeMeStatus(db, { firecrawl: fc })).used;
   for (let i = usedNow; i < 9; i++)
     await db.query(`INSERT INTO price_lookups (source, query, query_key, status) VALUES ('trademe', $1, $1, 'ok')`, [`race filler ${i}`]);
   let release!: () => void;
@@ -124,10 +128,10 @@ test("Trade Me prices: off until enabled, reads only robots-allowed listings, co
 
   // The group's daily limit.
   await saveTradeMeSettings(db, { dailyLimit: 10 }, user);
-  for (let i = (await tradeMeStatus(db, fc)).used; i < 10; i++)
+  for (let i = (await tradeMeStatus(db, { firecrawl: fc })).used; i < 10; i++)
     await db.query(`INSERT INTO price_lookups (source, query, query_key, status) VALUES ('trademe', $1, $1, 'ok')`, [`filler ${i}`]);
 
-  const st = await tradeMeStatus(db, fc);
+  const st = await tradeMeStatus(db, { firecrawl: fc });
   assert.equal(st.used, 10);
   assert.equal(st.available, false);
   await assert.rejects(tradeMeLookup(deps, { lotId: 501, userId: user, query: "hp elitebook 840" }), /lookups for the last 24 hours are used up/);
@@ -150,6 +154,9 @@ test("Trade Me prices: a wider second search when the first finds nothing, and p
       // The exact search turns up nothing from Trade Me; the shorter one finds a listing.
       if (q.includes("i5-12500T")) return { results: [{ url: "https://www.pbtech.co.nz/x", title: null, description: null }], credits: 1 };
       return { results: [{ url: `${TM}/listing/7`, title: null, description: null }], credits: 2 };
+    },
+    async page() {
+      throw new Error("not used");
     },
     async scrape(u) {
       calls.push(`scrape ${u}`);
@@ -176,5 +183,56 @@ test("Trade Me prices: a wider second search when the first finds nothing, and p
   assert.equal((await tradeMeLookup(deps, { lotId: 234341, userId: user, links: [`${TM}/listing/9`] })).cached, false, "a different set of links is a new lookup");
   assert.equal((await tradeMeLookup(deps, { lotId: 234342, userId: user, links: [`${TM}/listing/3`, `${TM}/listing/8?x=1`] })).cached, true, "the same set, in any order, is reused");
   await assert.rejects(tradeMeLookup(deps, { lotId: 234340, userId: user, links: [`${TM}/listing/3`] }), /robots\.txt doesn't allow/);
+  await db.end();
+});
+
+test("Trade Me prices: Trade Me's own search, the next searcher when one fails, and the web search as a last resort", async () => {
+  const db = connect(url);
+  await migrate(db);
+  const user = (await db.query(`INSERT INTO users (username, display_name, password_hash) VALUES ('tmuser3','TM3','x') RETURNING id`)).rows[0].id;
+  await saveTradeMeSettings(db, { enabled: true, dailyLimit: 50 }, user);
+  await db.query(`INSERT INTO auctions (id, title) VALUES (77, 'Test') ON CONFLICT DO NOTHING`);
+  await db.query(`INSERT INTO lots (id, auction_id, title, device_type, status) VALUES (9001, 77, 'HP ProBook 450 G8 - Laptop', 'laptop', 'open') ON CONFLICT DO NOTHING`);
+  const LAP = "https://www.trademe.co.nz/a/marketplace/computers/laptops/laptops/hp/listing";
+  const searched: string[] = [];
+  const broken: TradeMeSearcher = { name: "firecrawl", async search() { throw new Error("Firecrawl: HTTP 403"); } };
+  const chromium: TradeMeSearcher = {
+    name: "chromium",
+    async search(u) {
+      searched.push(decodeURIComponent(u.split("search_string=")[1]!));
+      const exact = u.includes("i5");
+      return {
+        status: 200, pageSha: "abc",
+        cards: exact
+          ? [{ url: `${LAP}/1`, listingId: "1", text: "Waikato Closes: Fri, 23 Oct HP ProBook 450 G8 i5 Buy Now $599.00" }]
+          : [
+              { url: `${LAP}/1`, listingId: "1", text: "Waikato Closes: Fri, 23 Oct HP ProBook 450 G8 i5 Buy Now $599.00" },
+              { url: `${LAP}/2`, listingId: "2", text: "Auckland Closes: Thu, 22 Oct HP ProBook 450 G8 No reserve $600.00 Buy Now $650.00" },
+              { url: `${LAP}/3`, listingId: "3", text: "Wellington Closes: Thu, 22 Oct Battery for HP ProBook 450 G8 Buy Now $109.59" },
+            ],
+      };
+    },
+  };
+  const deps = { db, firecrawl: null, robots, sleep: async () => {}, searchers: [broken, chromium] };
+  const r = await tradeMeLookup(deps, { lotId: 9001, userId: user, query: "HP ProBook 450 G8 i5-1135G7" });
+  assert.equal(r.method, "trademe-search:chromium", "Firecrawl failed, so Chromium ran the search");
+  assert.deepEqual(searched, ["HP ProBook 450 G8 i5-1135G7", "HP ProBook 450 G8"], "fewer than 3 matches, so the make and model were searched too");
+  assert.deepEqual(r.items.map((i: any) => [i.listing_id, Number(i.price), i.price_kind, i.reserve]), [["1", 599, "buy_now", null], ["2", 600, "current_bid", "none"]], "the battery is left out");
+  assert.equal(r.items[1].excerpt.slice(r.items[1].quote_start, r.items[1].quote_end), "$600.00");
+  assert.equal(r.items[1].excerpt.slice(r.items[1].buy_now_start, r.items[1].buy_now_end), "$650.00");
+
+  // Trade Me search unavailable, Firecrawl present: the web-search route still runs.
+  const webCalls: string[] = [];
+  const fc: FirecrawlClient = {
+    async search(q) { webCalls.push(`search ${q}`); return { results: [], credits: 1 }; },
+    async scrape() { throw new Error("not used"); },
+    async page() { throw new Error("not used"); },
+  };
+  const down: TradeMeSearcher = { name: "chromium", async search() { return { status: 406, pageSha: "", cards: [] }; } };
+  const w = await tradeMeLookup({ ...deps, firecrawl: fc, searchers: [down] }, { lotId: 9001, userId: user, query: "dell latitude 5520" });
+  assert.equal(w.method, "web-search");
+  assert.equal(webCalls[0], "search dell latitude 5520");
+  // No Firecrawl and Trade Me blocks: a clear failure.
+  await assert.rejects(tradeMeLookup({ ...deps, searchers: [down] }, { lotId: 9001, userId: user, query: "lenovo x1 carbon" }), /HTTP 406/);
   await db.end();
 });

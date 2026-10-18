@@ -54,11 +54,12 @@ export function Settings({ me }: { me: Me }) {
         <section className="card">
           <h3>Trade Me prices</h3>
           <p className="muted small">
-            A button on each lot that finds matching Trade Me listings with a web search, then reads up to 5 listing pages through
-            Firecrawl. It never opens Trade Me's search pages (its robots.txt disallows them), checks robots.txt before every page,
-            and keeps only the words around each price. Answers are reused for 3 days.
+            A button on each lot that runs Trade Me's own search for it (one results page, two at most) and reads the listings
+            shown: title, price, location and closing date, each price quoted from the results page. It runs only when someone
+            presses the button, with a plain browser; if Trade Me blocks it, it stops. Answers are reused for 3 days.
+            Trade Me's robots.txt asks bots not to use its search pages; you chose to use them for this (18 Oct 2026).
           </p>
-          {!tm.trademeKeySet && <p className="warn small">Needs a Firecrawl API key: set FIRECRAWL_API_KEY in Railway's variables, then redeploy.</p>}
+          {!tm.trademeKeySet && <p className="warn small">Needs Chromium (included in the Docker image) or a Firecrawl API key (FIRECRAWL_API_KEY).</p>}
           <label className="check">
             <input type="checkbox" disabled={!me.is_admin || !tm.trademeKeySet} checked={tm.trademe.enabled}
               onChange={(e) => run(() => account.saveTradeMe({ enabled: e.target.checked }), e.target.checked ? "Trade Me prices on." : "Trade Me prices off.")} />
@@ -69,7 +70,7 @@ export function Settings({ me }: { me: Me }) {
               {tm.trademeLimitOptions.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </label>
-          <p className="muted small">Each lookup uses about 6 Firecrawl requests (1 search, up to 5 pages). Trade Me's terms still apply; ask them if you plan to use it a lot.</p>
+          <p className="muted small">Pasting listing links (reading those listing pages) needs a Firecrawl key. Trade Me's terms still apply; ask them if you plan to use it a lot.</p>
         </section>
       )}
       {me.is_admin && (
