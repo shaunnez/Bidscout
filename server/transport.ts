@@ -322,11 +322,12 @@ export class Number8Transport implements Transport {
         continue;
       }
       if (res.status >= 300) throw new HttpError(res.status, url);
-      this.gate.replied(elapsedMs);
       const type = res.headers.get("content-type") ?? "";
       const head = buf.subarray(0, 200).toString("utf8").trimStart().toLowerCase();
       if (path.startsWith("/api/") && (type.includes("text/html") || head.startsWith("<!doctype") || head.startsWith("<html")))
         throw new StopRunError(`Expected JSON from ${path} but got a web page (challenge or login?)`, "challenge");
+      // Only a good reply counts towards climbing back (a quick challenge page must not).
+      this.gate.replied(elapsedMs);
       return { method, url, requestBody: body, status: res.status, body: buf, elapsedMs, attempts: attempt };
     }
   }

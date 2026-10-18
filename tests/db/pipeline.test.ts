@@ -12,7 +12,7 @@ import { loadSnapshotDoc } from "../../server/snapshots.ts";
 import { replayAll } from "../../server/scan/replay.ts";
 import { startRun, workOneRun } from "../../server/scan/runner.ts";
 import { ObjectStore } from "../../server/store.ts";
-import type { FetchResult, Transport } from "../../server/transport.ts";
+import { StopRunError, type FetchResult, type Transport } from "../../server/transport.ts";
 
 const url = process.env.BIDSCOUT_TEST_DATABASE_URL;
 if (!url) throw new Error("Run with npm run test:db");
@@ -365,5 +365,53 @@ test("history reads pages ahead while storing: each page once, in order, never p
   assert.equal(stored, 9);
   const last = (await db.query(`SELECT state, pages_read FROM scan_runs ORDER BY id DESC LIMIT 1`)).rows[0];
   assert.deepEqual([last.state, last.pages_read], ["complete", 4]);
+  await db.end();
+});
+
+test("a stop during read-ahead (challenge page) halts the other requests straight away", async () => {
+  const db = connect(url);
+  await migrate(db);
+  const store = new ObjectStore(fs.mkdtempSync(path.join(os.tmpdir(), "bidscout-")));
+  let signal: AbortSignal | null = null;
+  let page4SawStop: boolean | null = null;
+  let storedAtStop: Promise<number> | null = null;
+  const transport: Transport = {
+    stats: { requests: 0, retries: 0, throttles: 0 },
+    parallelism: 2,
+    async get() { throw new Error("unused"); },
+    async post(p, form) {
+      const page = Number(form["filters[page]"]);
+      if (page === 3) throw new StopRunError("Expected JSON from /api/getitems but got a web page (challenge or login?)", "challenge");
+      if (page === 4) {
+        // Wait for the run to stop this request, or give up after 2 s.
+        page4SawStop = await new Promise<boolean>((r) => {
+          if (signal!.aborted) return r(true);
+          signal!.addEventListener("abort", () => r(true), { once: true });
+          setTimeout(() => r(false), 2000);
+        });
+        throw new StopRunError("Run was stopped", "aborted");
+      }
+      const body = { total: 9, page, total_pages: 9, items: [{ id: String(7800 + page), auction_id: "82", auction_title: "Closed - Stopped Sale", lot_number: String(page),
+        title: `HP ProDesk 40${page} - Desktop`, description: "Type &#8211; Desktop", category_name: "IT & Equipment", buyer_premium: "15.000",
+        current_bid: "40.00", bid_count: "1", ends: Math.floor(NOW.getTime() / 1000) - 86_400 * page }] };
+      return { method: "POST", url: `https://www.number8.bid${p}`, requestBody: "", status: 200, body: Buffer.from(JSON.stringify(body)), elapsedMs: 5, attempts: 1 };
+    },
+  };
+  await db.query(`UPDATE scan_runs SET state='complete' WHERE state IN ('queued','running')`);
+  await startRun(db, "history");
+  const makeTransport = (s: AbortSignal) => {
+    signal = s;
+    s.addEventListener("abort", () => {
+      storedAtStop = db.query(`SELECT count(*)::int AS n FROM lots WHERE id BETWEEN 7801 AND 7809`).then((r) => r.rows[0].n);
+    }, { once: true });
+    return transport;
+  };
+  await workOneRun({ db, store, makeTransport, now: () => NOW });
+  assert.equal(page4SawStop, true, "the read-ahead sibling was stopped");
+  assert.ok((await storedAtStop!) < 2, "stopped before pages 1 and 2 were stored, not after");
+  const run = (await db.query(`SELECT state, stop_reason FROM scan_runs ORDER BY id DESC LIMIT 1`)).rows[0];
+  assert.equal(run.state, "partial");
+  assert.match(run.stop_reason, /challenge/);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM lots WHERE id BETWEEN 7801 AND 7809`)).rows[0].n, 2, "pages 1 and 2 were stored");
   await db.end();
 });

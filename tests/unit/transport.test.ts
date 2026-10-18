@@ -236,3 +236,22 @@ test("after a slow-down, quick replies climb back one request at a time, up to t
   for (let i = 0; i < 40; i++) await t.get(`/api/r${i}`);
   assert.equal(t.parallelism, 3, "never above the setting");
 });
+
+test("a quick challenge page doesn't count towards climbing back", async () => {
+  let clock = 0;
+  let n = 0;
+  const t = new Number8Transport({
+    baseUrl: "https://example.test", concurrency: 2, jitterMs: 0, random: () => 0, now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    fetch: async () => {
+      n++;
+      clock += n === 1 ? 4500 : 500;
+      if (n === 21) return new Response("<!doctype html><title>Checking your browser</title>", { headers: { "content-type": "text/html" } });
+      return json({ ok: 1 })();
+    },
+  });
+  for (let i = 0; i < 20; i++) await t.get(`/api/q${i}`); // one slow, then 19 quick
+  assert.equal(t.parallelism, 1);
+  await assert.rejects(t.get("/api/challenge"), StopRunError);
+  assert.equal(t.parallelism, 1, "the challenge page was the 20th quick reply but doesn't raise the limit");
+});

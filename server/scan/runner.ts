@@ -123,6 +123,8 @@ interface Ctx {
   log: (msg: string) => void;
   friends: FriendIds;
   images: ImageFetcher;
+  /** Stops every request of this run at once (aborts the transport). */
+  stopRequests: () => void;
   /** Past-sales pages already downloading while the previous ones are stored. */
   readAhead?: { from: number; count: number; snaps: Promise<Snapshot<N8LotsPage>[]> };
 }
@@ -408,7 +410,11 @@ async function historyStep(ctx: Ctx, cur: HistoryCursor): Promise<boolean> {
     const nextCount = Math.min(transport.parallelism, capLeft, total - nextFrom + 1);
     if (!run.options.untilKnown && nextCount > 0) {
       const next = fetchPages(nextFrom, nextCount);
-      next.catch(() => {}); // a failure surfaces when the next step awaits it
+      // A failure surfaces when the next step awaits it; but a stop (challenge, repeated 429/503)
+      // halts the other requests now, not after the current pages are stored.
+      next.catch((e) => {
+        if (e instanceof StopRunError && e.reason !== "aborted") ctx.stopRequests();
+      });
       ctx.readAhead = { from: nextFrom, count: nextCount, snaps: next };
     }
     const now = ctx.now();
@@ -475,7 +481,7 @@ export async function workOneRun(deps: WorkerDeps): Promise<boolean> {
   const transport = deps.makeTransport(abort.signal, settings.concurrency);
   const friends = await loadFriendIds(deps.db);
   const images = deps.makeImageFetcher?.() ?? new ImageFetcher();
-  const ctx: Ctx = { db: deps.db, store: deps.store, transport, owner, run, now: deps.now ?? (() => new Date()), log: deps.log ?? (() => {}), friends, images };
+  const ctx: Ctx = { db: deps.db, store: deps.store, transport, owner, run, now: deps.now ?? (() => new Date()), log: deps.log ?? (() => {}), friends, images, stopRequests: () => abort.abort() };
   const beat = setInterval(async () => {
     try {
       const r = await deps.db.query(
