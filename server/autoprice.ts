@@ -1,16 +1,24 @@
 import type { Db } from "./db.ts";
-import { lookupQuery } from "../shared/lookup.ts";
+import { lookupQuery, modelNumber } from "../shared/lookup.ts";
+import { NEW_CACHE_DAYS, newPriceLookup } from "./newprice.ts";
+import type { ParallelSearch } from "./parallel.ts";
 import { saveTradeMeSettings } from "./settings.ts";
 import { TradeMeBlocked, type TradeMeSearcher } from "./tmsearch.ts";
 import { autoStatus, CACHE_DAYS, LookupError, searchKey, tradeMeLookup, type LookupDeps } from "./trademe.ts";
 
 /**
- * Automatic Trade Me prices (Shaun's decision, 18 Oct 2026): every open IT lot gets the lookup the
- * button would run for it, through Parallel only, many at a time with their starts spread out,
- * under its own daily limit (Settings). Lots that share a search share one answer (the 3-day
- * cache), so each search runs once. If Trade Me refuses Parallel, or lookups keep failing, it
- * turns itself off and Settings says why.
+ * Automatic prices (Shaun's decisions, 18 Oct 2026): every open lot that isn't a bulk or mixed lot
+ * gets the Trade Me lookup the button would run for it, and products with a model number that
+ * aren't computers also get a new-price-in-NZ lookup (server/newprice.ts). All through Parallel
+ * only, many at a time with their starts spread out, under one daily limit (Settings). Lots that
+ * share a search share one answer (the cache), so each search runs once. If Trade Me refuses
+ * Parallel, or lookups keep failing, it turns itself off and Settings says why.
  */
+
+/** Bulk, pallet and mixed lots (the same words as isBulkLot in shared/lookup.ts): nothing to price. */
+export const NOT_BULK = `l.title !~* '\\m(pallets? (lot|of|load)|bulk|assorted|mixed|miscellaneous|misc|contents of|box(es)? of|lots? of|job lot|bundle of)\\M'`;
+const HAS = (source: string, days: string) => `EXISTS (SELECT 1 FROM price_lookup_lots k JOIN price_lookups pl ON pl.id = k.lookup_id
+  WHERE k.lot_id = l.id AND pl.status = 'ok' AND pl.source = '${source}' AND pl.created_at > now() - make_interval(days => ${days}))`;
 
 /**
  * Two lookups start a second, up to 100 running at once (each takes 10-30 s). Parallel allows
@@ -22,44 +30,47 @@ const MAX_FAILURES_IN_A_ROW = 5;
 /** Enough lots for a whole day's limit in one pass. */
 const BATCH = 1000;
 
-/** Open IT lots with no answer under 3 days old, the soonest to close first. */
+/**
+ * Open lots waiting for a price, the soonest to close first: no Trade Me answer under 3 days old,
+ * or (not computers) no new-price answer under 7 days old.
+ */
 export async function lotsToPrice(db: Pick<Db, "query">, limit = BATCH) {
   const r = await db.query(
-    `SELECT l.id, l.is_it, l.make, l.model, l.cpu, l.title, l.ram_gb::float8 AS ram_gb, l.storage_gb::float8 AS storage_gb, l.storage_type, l.device_type
-     FROM lots l
-     WHERE l.status = 'open' AND l.is_it AND (l.ends_at IS NULL OR l.ends_at > now())
-       AND NOT EXISTS (SELECT 1 FROM price_lookup_lots k JOIN price_lookups pl ON pl.id = k.lookup_id
-                       WHERE k.lot_id = l.id AND pl.status = 'ok' AND pl.created_at > now() - make_interval(days => $1))
-     ORDER BY l.ends_at ASC NULLS LAST, l.id
-     LIMIT $2`,
-    [CACHE_DAYS, limit],
+    `SELECT * FROM (
+       SELECT l.id, l.is_it, l.make, l.model, l.cpu, l.title, l.description, l.ram_gb::float8 AS ram_gb, l.storage_gb::float8 AS storage_gb,
+              l.storage_type, l.device_type, l.ends_at, NOT ${HAS("trademe", "$1")} AS need_tm, (NOT l.is_it AND NOT ${HAS("newprice", "$2")}) AS need_new
+       FROM lots l
+       WHERE l.status = 'open' AND (l.ends_at IS NULL OR l.ends_at > now()) AND ${NOT_BULK}) x
+     WHERE need_tm OR need_new
+     ORDER BY ends_at ASC NULLS LAST, id
+     LIMIT $3`,
+    [CACHE_DAYS, NEW_CACHE_DAYS, limit],
   );
   return r.rows;
 }
 
 /**
- * For Settings, read live: open IT lots and how many have a current answer, today's automatic
+ * For Settings, read live: open lots worth pricing and how many have a current answer, today's automatic
  * lookups, how many are running now, and the latest ten (all from the database, so it works
  * whichever process runs the loop).
  */
 export async function autoProgress(db: Pick<Db, "query">) {
   const r = await db.query(
     `SELECT count(*) AS open,
-            count(*) FILTER (WHERE EXISTS (SELECT 1 FROM price_lookup_lots k JOIN price_lookups pl ON pl.id = k.lookup_id
-                                          WHERE k.lot_id = l.id AND pl.status = 'ok' AND pl.created_at > now() - make_interval(days => $1))) AS priced
-     FROM lots l WHERE l.status = 'open' AND l.is_it AND (l.ends_at IS NULL OR l.ends_at > now())`,
-    [CACHE_DAYS],
+            count(*) FILTER (WHERE ${HAS("trademe", "$1")} OR ${HAS("newprice", "$2")}) AS priced
+     FROM lots l WHERE l.status = 'open' AND (l.ends_at IS NULL OR l.ends_at > now()) AND ${NOT_BULK}`,
+    [CACHE_DAYS, NEW_CACHE_DAYS],
   );
   const s = await autoStatus(db);
   const running = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE origin='auto' AND status='running'`)).rows[0].n);
   const recent = (await db.query(
-    `SELECT pl.id, pl.lot_id, pl.query, pl.status, pl.found, left(pl.error, 200) AS error, pl.created_at, l.title AS lot_title
+    `SELECT pl.id, pl.lot_id, pl.source, pl.query, pl.status, pl.found, left(pl.error, 200) AS error, pl.created_at, l.title AS lot_title
      FROM price_lookups pl LEFT JOIN lots l ON l.id = pl.lot_id
      WHERE pl.origin = 'auto' ORDER BY pl.id DESC LIMIT 10`,
   )).rows;
   // The limit is a rolling 24 hours: when it's reached, more are allowed as the oldest one passes 24 hours.
   const oldest = s.used >= s.dailyLimit
-    ? (await db.query(`SELECT min(created_at) AS at FROM price_lookups WHERE source='trademe' AND origin='auto' AND created_at > now() - interval '24 hours'`)).rows[0].at
+    ? (await db.query(`SELECT min(created_at) AS at FROM price_lookups WHERE source IN ('trademe','newprice') AND origin='auto' AND created_at > now() - interval '24 hours'`)).rows[0].at
     : null;
   const resumesAt = oldest ? new Date(new Date(oldest).getTime() + 86_400_000).toISOString() : null;
   return { openLots: Number(r.rows[0].open), priced: Number(r.rows[0].priced), used: s.used, dailyLimit: s.dailyLimit, running, recent, resumesAt };
@@ -68,6 +79,8 @@ export async function autoProgress(db: Pick<Db, "query">) {
 export interface AutoDeps {
   db: Db;
   parallel: TradeMeSearcher;
+  /** Parallel's search, for new prices; without it only Trade Me lookups run. */
+  search?: ParallelSearch | null;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   gapMs?: number;
@@ -75,8 +88,8 @@ export interface AutoDeps {
   signal?: AbortSignal;
 }
 
-/** Lots whose lookup failed are left alone for a day (in this process). */
-const retryAfter = new Map<number, number>();
+/** Lots whose lookup failed are left alone for a day (in this process), per kind of lookup. */
+const retryAfter = new Map<string, number>();
 let failuresInARow = 0;
 
 async function stop(db: Db, reason: string) {
@@ -97,12 +110,20 @@ export async function autoPriceTick(deps: AutoDeps) {
   // Parallel only: no Chromium (too heavy to run in bulk) and no Firecrawl web-search fallback.
   const lookupDeps: LookupDeps = { db, firecrawl: null, searchers: [deps.parallel], robots: async () => { throw new Error("not used"); } };
 
-  const groups = new Map<string, Array<{ id: number; query: string }>>();
+  type Kind = "trademe" | "newprice";
+  const groups = new Map<string, { kind: Kind; lots: Array<{ id: number; query: string }> }>();
+  const add = (kind: Kind, key: string, lot: { id: number; query: string }) => {
+    if ((retryAfter.get(`${kind}:${lot.id}`) ?? 0) > now()) return;
+    const g = groups.get(`${kind}|${key}`) ?? { kind, lots: [] };
+    g.lots.push(lot);
+    groups.set(`${kind}|${key}`, g);
+  };
   for (const lot of await lotsToPrice(db)) {
-    if ((retryAfter.get(lot.id) ?? 0) > now()) continue;
     const query = lookupQuery(lot);
-    const key = searchKey(query, lot.device_type, lot.title);
-    groups.set(key, [...(groups.get(key) ?? []), { id: lot.id, query }]);
+    if (!query) continue;
+    if (lot.need_tm) add("trademe", searchKey(query, lot.device_type, lot.title), { id: lot.id, query });
+    // New prices only for products with a model number: a shop search for "office desk" means little.
+    if (lot.need_new && deps.search && modelNumber(lot.description ?? "", lot.title)) add("newprice", query.toLowerCase(), { id: lot.id, query });
   }
   const queue = [...groups.values()];
   let halt = false;
@@ -114,15 +135,18 @@ export async function autoPriceTick(deps: AutoDeps) {
     nextStart = at + gap;
     if (at > now()) await sleep(at - now());
   };
-  const lookup = (lot: { id: number; query: string }) => tradeMeLookup(lookupDeps, { lotId: lot.id, userId: null, query: lot.query, auto: true });
+  const lookup = (kind: Kind, lot: { id: number; query: string }) =>
+    kind === "trademe"
+      ? tradeMeLookup(lookupDeps, { lotId: lot.id, userId: null, query: lot.query, auto: true })
+      : newPriceLookup({ db, parallel: deps.search ?? null }, { lotId: lot.id, userId: null, query: lot.query, auto: true });
 
   const worker = async () => {
     for (let group = queue.shift(); group && !halt && !deps.signal?.aborted; group = queue.shift()) {
-      const [first, ...rest] = group;
+      const [first, ...rest] = group.lots;
       await takeSlot();
       if (halt) return;
       try {
-        const r = await lookup(first!);
+        const r = await lookup(group.kind, first!);
         if (r.cached) {
           out.reused++;
           nextStart = Math.max(now(), nextStart - gap);
@@ -146,7 +170,7 @@ export async function autoPriceTick(deps: AutoDeps) {
         }
         out.failed++;
         // The rest of the group would run the same failing search: they wait a day too.
-        for (const lot of group) retryAfter.set(lot.id, now() + 86_400_000);
+        for (const lot of group.lots) retryAfter.set(`${group.kind}:${lot.id}`, now() + 86_400_000);
         // A lookup that never started (e.g. search text too short) costs nothing and isn't a failure in a row.
         if (!(e instanceof LookupError && e.status === 400) && ++failuresInARow >= MAX_FAILURES_IN_A_ROW && !halt) {
           halt = true;
@@ -159,10 +183,10 @@ export async function autoPriceTick(deps: AutoDeps) {
       // The answer is in: the rest of the group take it from the cache.
       for (const lot of rest) {
         try {
-          await lookup(lot);
+          await lookup(group.kind, lot);
           out.reused++;
         } catch {
-          retryAfter.set(lot.id, now() + 86_400_000);
+          retryAfter.set(`${group.kind}:${lot.id}`, now() + 86_400_000);
         }
       }
     }
@@ -176,7 +200,7 @@ export async function runAutoPriceLoop(deps: AutoDeps, log: (m: string) => void)
   while (!deps.signal?.aborted) {
     try {
       const r = await autoPriceTick(deps);
-      if (r.looked || r.failed || r.stopped) log(`Trade Me auto prices: ${r.looked} looked up, ${r.reused} reused, ${r.failed} failed${r.stopped ? `; ${r.stopped}` : ""}`);
+      if (r.looked || r.failed || r.stopped) log(`Automatic prices: ${r.looked} looked up, ${r.reused} reused, ${r.failed} failed${r.stopped ? `; ${r.stopped}` : ""}`);
     } catch (e) {
       log(`Trade Me auto prices error: ${(e as Error).message}`);
     }

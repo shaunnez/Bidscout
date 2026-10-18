@@ -15,8 +15,8 @@ export async function runWorkerLoop(deps: Awaited<ReturnType<typeof appContext>>
   } catch (e) {
     log(`re-parse error: ${(e as Error).message}`);
   }
-  // Automatic Trade Me prices for open IT lots, through Parallel (Settings turns them on).
-  if (deps.parallel) void runAutoPriceLoop({ db: deps.db, parallel: parallelSearcher(deps.parallel), signal }, log);
+  // Automatic prices for open lots (Trade Me, and new prices for products), through Parallel (Settings turns them on).
+  if (deps.parallel) void runAutoPriceLoop({ db: deps.db, parallel: parallelSearcher(deps.parallel), search: deps.parallel, signal }, log);
   let lastTick = 0;
   while (!signal?.aborted) {
     if (Date.now() - lastTick > 60_000) {

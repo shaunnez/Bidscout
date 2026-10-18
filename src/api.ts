@@ -60,6 +60,21 @@ export interface Lot {
   tm_pct_now: number | null;
   tm_pct_expected: number | null;
   tm_pct: number | null;
+  /** New price in NZ (open lots): shops found, their median, when; the all-in now/expected as % of it. */
+  new_n: number | null;
+  new_mid: number | null;
+  new_at: string | null;
+  new_pct_now: number | null;
+  new_pct_expected: number | null;
+  new_pct: number | null;
+  /** A wholesale or RRP price written in the title, the words it came from and where. */
+  list_price: number | null;
+  list_quote: string | null;
+  list_rrp: boolean | null;
+  list_start: number | null;
+  list_pct_now: number | null;
+  /** Against outside prices, as a share of the opportunity line: 1 or less is an opportunity. */
+  opp_score: number | null;
   spec_n: number | null;
   spec_p50: number | null;
   watched: boolean;
@@ -117,6 +132,7 @@ export interface LotDetail {
   watchers: Array<{ id: number; display_name: string; added_at: string }>;
   photoValues: Array<{ id: number; field: string; value: string; quote: string; confidence: number; image_url: string }>;
   tradeMe: TradeMeState;
+  newPrice: { available: boolean; reason: string | null; latest: TradeMeLookup | null };
   friendBids: Array<{ user_id: number; display_name: string; kind: "high_bidder" | "bid"; amount: number | null; bid_at: string | null; seen_at: string }>;
   comps: Array<{ id: number; title: string; final_bid: number; all_in: number; closed_at: string; faults: string[]; auction_title: string; item_url: string | null; thumb_url: string | null; bid_count: number | null; outcome_snapshot_id: number; outcome_path: string }>;
 }
@@ -317,6 +333,7 @@ export const api = {
   photoSummary: () => call<PhotoSummary>(`/api/photos/summary`),
   auctions: (scope: "live" | "closed") => call<{ auctions: Auction[] }>(`/api/auctions?scope=${scope}`),
   auction: (id: number) => call<Auction>(`/api/auctions/${id}`),
+  newPrice: (id: number, query: string) => call<TradeMeLookup>(`/api/lots/${id}/newprice`, { method: "POST", body: JSON.stringify({ query }) }),
   tradeMe: (id: number, query: string) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ query }) }),
   tradeMeLookup: (lookupId: number) => call<TradeMeLookup>(`/api/trademe/lookups/${lookupId}`),
   tradeMeLinks: (id: number, links: string[]) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ links }) }),
@@ -376,7 +393,7 @@ export interface AutoProgress {
   running: number;
   /** When the daily limit is reached: when the oldest of the last 24 hours' lookups ages out. */
   resumesAt: string | null;
-  recent: Array<{ id: number; lot_id: number | null; lot_title: string | null; query: string; status: "ok" | "failed" | "running"; found: number; error: string | null; created_at: string }>;
+  recent: Array<{ id: number; lot_id: number | null; lot_title: string | null; source: "trademe" | "newprice"; query: string; status: "ok" | "failed" | "running"; found: number; error: string | null; created_at: string }>;
 }
 
 /** One Trade Me results page read through Parallel, for the admin's test; not stored. */

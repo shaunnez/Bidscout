@@ -86,15 +86,16 @@ export function Settings({ me }: { me: Me }) {
             <div className="probe">
               <h4>Automatic prices</h4>
               <p className="muted small">
-                Looks up every open IT lot the way the button would, through Parallel only, about 2 searches a second.
-                Lots that need the same search share one answer, and answers are kept for 3 days, then refreshed while the lot is
-                still open. New lots are picked up after each scan. If Trade Me refuses Parallel, or lookups keep failing, it turns
-                itself off and says why here.
+                Looks up every open lot the way the buttons would (bulk, pallet and mixed lots are skipped): Trade Me prices for
+                all of them, and the new price at New Zealand shops for products with a model number that aren't computers.
+                Through Parallel only, about 2 searches a second. Lots that need the same search share one answer; Trade Me answers
+                are kept 3 days and new prices 7, then refreshed while the lot is open. New lots are picked up after each scan. If
+                Trade Me refuses Parallel, or lookups keep failing, it turns itself off and says why here.
               </p>
               <label className="check">
                 <input type="checkbox" disabled={!me.is_admin || !tm.trademe.enabled} checked={tm.trademe.autoEnabled}
                   onChange={(e) => run(() => account.saveTradeMe({ autoEnabled: e.target.checked }), e.target.checked ? "Automatic prices on." : "Automatic prices off.")} />
-                Look up open IT lots automatically
+                Look up open lots automatically
               </label>
               <label className="select"><span>Automatic lookups per day</span>
                 <select disabled={!me.is_admin} value={tm.trademe.autoDailyLimit} onChange={(e) => run(() => account.saveTradeMe({ autoDailyLimit: Number(e.target.value) }), "Saved.")}>
@@ -206,11 +207,11 @@ function AutoPrices({ initial, stopped, onState }: {
     : "Waiting for the next pass (about once a minute)";
   return (
     <div className="auto-progress">
-      <Bar label="Open IT lots with Trade Me prices" done={p.priced} total={p.openLots || null} />
+      <Bar label="Open lots with Trade Me or new prices" done={p.priced} total={p.openLots || null} />
       <p className={`small ${p.running ? "ok" : "muted"}`}>{status}</p>
       {stopped && <p className="warn small">Stopped {nzDate(stopped.at)}: {stopped.reason}</p>}
       <p className="muted small">
-        {p.used} of {p.dailyLimit} automatic lookups used in the last 24 hours. Each reads one or two pages through Parallel (about $0.001 a page).
+        {p.used} of {p.dailyLimit} automatic lookups used in the last 24 hours. A Trade Me lookup reads one or two pages through Parallel (about $0.001 a page); a new-price lookup is one Parallel search (about $0.005).
       </p>
       {p.recent.length > 0 && (
         <details>
@@ -219,6 +220,7 @@ function AutoPrices({ initial, stopped, onState }: {
             {p.recent.map((l) => (
               <li key={l.id} className={l.status === "failed" ? "warn" : ""}>
                 <span className="muted">{ago(l.created_at)}</span>{" "}
+                <span className="muted">{l.source === "newprice" ? "New price" : "Trade Me"}:</span>{" "}
                 {l.lot_id ? <a href={`#/settings?lot=${l.lot_id}`}>{l.query}</a> : l.query}
                 {" · "}
                 {l.status === "running" ? "running…" : l.status === "ok" ? `${l.found} listing${l.found === 1 ? "" : "s"}` : l.error ?? "failed"}

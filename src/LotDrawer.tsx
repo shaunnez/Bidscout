@@ -160,7 +160,7 @@ export function LotDrawer({ id, onClose, onOpenLot, onOpenAuction }: {
               </section>
             )}
 
-            <PriceLookup lot={l} tradeMe={d.tradeMe} onCite={setCite} />
+            <PriceLookup lot={l} tradeMe={d.tradeMe} newPrice={d.newPrice} onCite={setCite} />
 
             <section className="social-box">
               <div className="social-head">
@@ -445,7 +445,7 @@ function AuctionBox({ lot, terms, onOpen }: { lot: LotDetail["lot"]; terms: LotD
 }
 
 /** Links to search other sites for a guide price. BidScout opens them; it doesn't read them. */
-function PriceLookup({ lot, tradeMe, onCite }: { lot: LotDetail["lot"]; tradeMe: TradeMeState; onCite: (c: CiteRequest) => void }) {
+function PriceLookup({ lot, tradeMe, newPrice, onCite }: { lot: LotDetail["lot"]; tradeMe: TradeMeState; newPrice: LotDetail["newPrice"]; onCite: (c: CiteRequest) => void }) {
   const [q, setQ] = useState(() => lookupQuery(lot));
   useEffect(() => setQ(lookupQuery(lot)), [lot.id]);
   const e = encodeURIComponent(q.trim());
@@ -467,6 +467,7 @@ function PriceLookup({ lot, tradeMe, onCite }: { lot: LotDetail["lot"]; tradeMe:
         ))}
       </div>
       <TradeMePrices lot={lot} state={tradeMe} query={q.trim()} onCite={onCite} />
+      {(newPrice.latest || (newPrice.available && !lot.is_it)) && <NewPrices lot={lot} state={newPrice} query={q.trim()} onCite={onCite} />}
     </section>
   );
 }
@@ -624,6 +625,72 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
               : res.queries === null ? <>Web search for “{res.query}”</> : res.queries.length ? <>Web search for {res.queries.map((q) => `“${q}”`).join(", then ")}</> : <>{res.query} (links you pasted)</>}, {nzDate(res.created_at)}{res.cached ? " (saved answer)" : ""}.
             Each price opens the words it came from{res.method?.startsWith("trademe-search") ? " on Trade Me's results page" : " on the listing"}.
             Greyed prices couldn't be found in the page text and aren't counted. Trade Me prices are asking or sold prices before any fees.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** New price in NZ (server/newprice.ts): shop prices found by a web search, each quoted from the shop's page. */
+function NewPrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; state: LotDetail["newPrice"]; query: string; onCite: (c: CiteRequest) => void }) {
+  const [res, setRes] = useState<TradeMeLookup | null>(state.latest);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { setRes(state.latest); setErr(null); }, [lot.id]);
+  const run = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setRes(await api.newPrice(lot.id, query));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const prices = (res?.items ?? []).filter((i) => i.verified && i.price).map((i) => Number(i.price));
+  const mid = median(prices);
+  return (
+    <div className="tm">
+      <div className="tm-head">
+        <button className="primary small-btn" onClick={run} disabled={busy || !query || !state.available}>{busy ? "Searching NZ shops…" : res ? "Search shops again" : "New price in NZ"}</button>
+        <span className="muted small">{state.available ? "Searches New Zealand shops for this product · answers kept 7 days" : state.reason}</span>
+      </div>
+      {err && <p className="err small">{err}</p>}
+      {res && (
+        <>
+          <p className="small">
+            {prices.length
+              ? <>New in NZ: <b>~{money(mid)}</b> (median of {prices.length} shop{prices.length === 1 ? "" : "s"}){lot.all_in && mid ? <> · all-in now is {Math.round((100 * lot.all_in) / mid)}% of it</> : null}</>
+              : <>No New Zealand shop prices found for “{res.query}”. Try a different search above (brand and model work best).</>}
+          </p>
+          {res.items.length > 0 && (
+            <div className="table-wrap">
+              <table className="table compact">
+                <thead><tr><th>Shop</th><th className="r">Price</th></tr></thead>
+                <tbody>
+                  {res.items.map((i) => (
+                    <tr key={i.id}>
+                      <td>
+                        <a href={i.url} target="_blank" rel="noreferrer">{i.listing_id} ↗</a>
+                        {i.title && <div className="muted small">{i.title}</div>}
+                      </td>
+                      <td className="r num">
+                        <button className="cite inline" onClick={() => onCite({
+                          title: "New price in NZ",
+                          load: async () => ({ kind: "external", site: i.listing_id, url: i.url, value: `New ${money(i.price)}`, excerpt: i.excerpt!, start: i.quote_start!, end: i.quote_end!, fetchedAt: i.fetched_at, sha256: i.page_sha256, where: "the shop's page, as Parallel's search index holds it" }),
+                        })}>{money(i.price)}</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="footnote">
+            Web search through Parallel for “{res.query}”, New Zealand shops only (.nz sites, not Trade Me), {nzDate(res.created_at)}{res.cached ? " (saved answer)" : ""}.
+            Each price opens the words it came from. Prices are what the shop listed, usually new and including GST; check the shop for stock and shipping.
           </p>
         </>
       )}

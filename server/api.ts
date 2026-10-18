@@ -18,6 +18,7 @@ import { refreshLot } from "./scan/refresh.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
 import { getScanSettings, getTradeMeSettings, LIVE_HOURS, saveScanSettings, saveTradeMeSettings, TRADEME_AUTO_LIMITS, TRADEME_LIMITS } from "./settings.ts";
 import { autoProgress } from "./autoprice.ts";
+import { newPriceLookup, newPriceStatus } from "./newprice.ts";
 import { parallelSearcher, probeSearcher } from "./tmsearch.ts";
 import { failInterruptedLookups, latestForLot, loadLookup, LookupError, tradeMeLookup, tradeMeStatus } from "./trademe.ts";
 import { LOT_COLUMNS, LOT_JOINS, parseQuery, searchLots } from "./search.ts";
@@ -305,6 +306,7 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
     lot, specs: specs.rows, observations: obs.rows, terms: terms.rows[0] ?? null, revisions: revs.rows, comps: comps.rows,
     watchers: watchers.rows, friendBids: friendBids.rows, photoValues: photoValues.rows,
     tradeMe: { ...(await tradeMeStatus(db, { firecrawl: ctx.firecrawl, searchers: ctx.tradeMeSearchers })), latest: await latestForLot(db, id) },
+    newPrice: { ...(await newPriceStatus(db, ctx.parallel)), latest: await latestForLot(db, id, "newprice") },
   };
 });
 
@@ -321,6 +323,16 @@ app.post<{ Params: { id: string }; Body: { query?: string; links?: string[] } }>
       { db, firecrawl: ctx.firecrawl, robots: ctx.tradeMeRobots, searchers: ctx.tradeMeSearchers },
       { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? ""), links, background: true },
     );
+  } catch (e) {
+    const status = e instanceof LookupError ? e.status : 502;
+    return reply.code(status).send({ error: (e as Error).message });
+  }
+});
+
+/** New price in NZ for a lot (server/newprice.ts): one web search, a few seconds; answers kept 7 days. */
+app.post<{ Params: { id: string }; Body: { query?: string } }>("/api/lots/:id/newprice", async (req, reply) => {
+  try {
+    return await newPriceLookup({ db, parallel: ctx.parallel }, { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? "") });
   } catch (e) {
     const status = e instanceof LookupError ? e.status : 502;
     return reply.code(status).send({ error: (e as Error).message });

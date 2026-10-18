@@ -19,7 +19,7 @@ export interface SearchQuery {
   watch?: boolean;
   /** Only lots with a spec read from their photos. */
   photo?: boolean;
-  /** Trade Me: "1" lots compared with Trade Me listings, "opp" only opportunities. */
+  /** Outside prices: "1" lots compared with Trade Me listings or new prices, "opp" only opportunities. */
   tm?: "1" | "opp";
   sort?: "closing" | "newest" | "price" | "deal" | "bids" | "ended" | "value" | "expected" | "score" | "tm";
   page?: number;
@@ -88,7 +88,7 @@ const TM_JOIN = `
   LEFT JOIN LATERAL (
     SELECT count(v.p)::int AS tm_n, percentile_cont(0.5) WITHIN GROUP (ORDER BY v.p) AS tm_mid, min(v.p) AS tm_low, max(pl.created_at) AS tm_at
     FROM (SELECT k.lookup_id FROM price_lookup_lots k JOIN price_lookups p ON p.id = k.lookup_id
-          WHERE l.status = 'open' AND k.lot_id = l.id AND p.status = 'ok' ORDER BY k.used_at DESC LIMIT 1) last
+          WHERE l.status = 'open' AND k.lot_id = l.id AND p.status = 'ok' AND p.source = 'trademe' ORDER BY k.used_at DESC LIMIT 1) last
     JOIN price_lookups pl ON pl.id = last.lookup_id
     JOIN LATERAL (
       SELECT COALESCE(CASE WHEN i.buy_now_start IS NOT NULL THEN i.buy_now END,
@@ -98,12 +98,31 @@ const TM_JOIN = `
     ) v ON v.p > 0
   ) tm ON true`;
 
-export const LOT_JOINS = BASE_JOINS + TM_JOIN;
+/** New price in NZ (open lots): the median of the shop prices in the newest new-price lookup (server/newprice.ts). */
+const NEW_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT count(i.price)::int AS new_n, percentile_cont(0.5) WITHIN GROUP (ORDER BY i.price) AS new_mid, max(pl.created_at) AS new_at
+    FROM (SELECT k.lookup_id FROM price_lookup_lots k JOIN price_lookups p ON p.id = k.lookup_id
+          WHERE l.status = 'open' AND k.lot_id = l.id AND p.status = 'ok' AND p.source = 'newprice' ORDER BY k.used_at DESC LIMIT 1) last
+    JOIN price_lookups pl ON pl.id = last.lookup_id
+    JOIN price_lookup_items i ON i.lookup_id = last.lookup_id AND i.verified AND i.price > 0
+  ) np ON true`;
+
+/** A wholesale or RRP price written in the title ("Wholesale $4,950.00"), with the words it came from. */
+const LIST_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT m[1] AS list_quote, replace(m[3], ',', '')::numeric AS list_price, (m[2] IS NOT NULL) AS list_rrp
+    FROM regexp_match(l.title, '((?:total\\s+)?(?:wholesale|(rrp)|retail)(?:\\s+total)?(?:\\s+price)?\\s*:?\\s*\\$\\s*(\\d[\\d,]*(?:\\.\\d{1,3})?))', 'i') m
+  ) lp ON true`;
+
+export const LOT_JOINS = BASE_JOINS + TM_JOIN + NEW_JOIN + LIST_JOIN;
 
 /** Trade Me listings needed before a lot is compared with them. */
 export const TM_MIN_LISTINGS = 2;
-/** An opportunity: expected (else current) all-in at or under this share of the Trade Me price. */
+/** An opportunity: expected (else current) all-in at or under this share of the Trade Me price... */
 export const TM_OPPORTUNITY_PCT = 70;
+/** ...or of the new price in NZ (auction lots usually go for far less than new). */
+export const NEW_OPPORTUNITY_PCT = 40;
 
 /**
  * The comparable set used: the same machine when it has 3+ sales, else similar machines,
@@ -125,6 +144,9 @@ const EXPECTED = (f: "p25" | "p50" | "p75") =>
 /** Expected all-in when there is one, else the all-in now: what the Trade Me comparison uses. */
 const TM_BASIS = () => `COALESCE(${EXPECTED("p50")}, ${ALL_IN})`;
 const TM_PCT = (v: string) => `CASE WHEN tm.tm_n >= ${TM_MIN_LISTINGS} AND tm.tm_mid > 0 THEN round(100 * ${v} / tm.tm_mid)::int END`;
+const NEW_PCT = (v: string) => `CASE WHEN np.new_n >= 1 AND np.new_mid > 0 THEN round(100 * ${v} / np.new_mid)::int END`;
+/** How good a deal against outside prices, as a share of its opportunity line (1 or less = an opportunity). */
+const OPP_SCORE = () => `LEAST(${TM_PCT(TM_BASIS())} / ${TM_OPPORTUNITY_PCT}.0, ${NEW_PCT(TM_BASIS())} / ${NEW_OPPORTUNITY_PCT}.0)`;
 
 export const LOT_COLUMNS = `
   l.id, l.auction_id, l.lot_number, l.title, l.category, l.quantity, l.item_url, l.thumb_url, l.city, l.ends_at,
@@ -145,7 +167,12 @@ export const LOT_COLUMNS = `
   fh.display_name AS friend_high_bidder,
   (SELECT count(DISTINCT fb.user_id)::int FROM friend_bids fb WHERE fb.lot_id = l.id) AS friend_bidders,
   tm.tm_n, tm.tm_mid, tm.tm_low, tm.tm_at,
-  ${TM_PCT(ALL_IN)} AS tm_pct_now, ${TM_PCT(EXPECTED("p50"))} AS tm_pct_expected, ${TM_PCT(TM_BASIS())} AS tm_pct`;
+  ${TM_PCT(ALL_IN)} AS tm_pct_now, ${TM_PCT(EXPECTED("p50"))} AS tm_pct_expected, ${TM_PCT(TM_BASIS())} AS tm_pct,
+  np.new_n, np.new_mid, np.new_at,
+  ${NEW_PCT(ALL_IN)} AS new_pct_now, ${NEW_PCT(EXPECTED("p50"))} AS new_pct_expected, ${NEW_PCT(TM_BASIS())} AS new_pct,
+  lp.list_price::float8 AS list_price, lp.list_quote, lp.list_rrp, strpos(l.title, lp.list_quote) - 1 AS list_start,
+  CASE WHEN lp.list_price > 0 THEN round(100 * ${ALL_IN} / lp.list_price)::int END AS list_pct_now,
+  (${OPP_SCORE()})::float8 AS opp_score`;
 
 function where(q: SearchQuery, params: unknown[], skip?: string) {
   const w: string[] = [];
@@ -175,8 +202,8 @@ function where(q: SearchQuery, params: unknown[], skip?: string) {
   if (q.auction) w.push(`l.auction_id = ${p(q.auction)}`);
   if (q.watch) w.push(`w.lot_id IS NOT NULL`);
   if (q.photo) w.push(`cardinality(l.photo_fields) > 0`);
-  if (q.tm) w.push(`l.status='open' AND tm.tm_n >= ${TM_MIN_LISTINGS} AND tm.tm_mid > 0`);
-  if (q.tm === "opp") w.push(`100 * ${TM_BASIS()} / tm.tm_mid <= ${TM_OPPORTUNITY_PCT}`);
+  if (q.tm) w.push(`l.status='open' AND ((tm.tm_n >= ${TM_MIN_LISTINGS} AND tm.tm_mid > 0) OR (np.new_n >= 1 AND np.new_mid > 0))`);
+  if (q.tm === "opp") w.push(`${OPP_SCORE()} <= 1`);
   return w.length ? `WHERE ${w.join(" AND ")}` : "";
 }
 
@@ -190,7 +217,7 @@ const ORDER: Record<string, string> = {
   value: `value_index DESC NULLS LAST, spec_score DESC NULLS LAST, l.ends_at ASC`,
   expected: `expected_mid ASC NULLS LAST, l.ends_at ASC`,
   score: `spec_score DESC NULLS LAST, l.ends_at ASC`,
-  tm: `tm_pct ASC NULLS LAST, l.ends_at ASC`,
+  tm: `opp_score ASC NULLS LAST, l.ends_at ASC`,
 };
 
 /** All search queries run in parallel; $1 is always the signed-in user (for favourites). */
