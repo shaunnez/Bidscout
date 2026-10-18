@@ -92,6 +92,8 @@ export interface LotDetail {
     outcome_snapshot_id: number | null;
     outcome_path: string | null;
     auction_url: string | null;
+    photo_ocr_at: string | null;
+    photos_read: number;
     auction_city: string | null;
     auction_address: string | null;
     auction_lots_close_at: string | null;
@@ -108,6 +110,19 @@ export interface LotDetail {
   tradeMe: TradeMeState;
   friendBids: Array<{ user_id: number; display_name: string; kind: "high_bidder" | "bid"; amount: number | null; bid_at: string | null; seen_at: string }>;
   comps: Array<{ id: number; title: string; final_bid: number; all_in: number; closed_at: string; faults: string[]; auction_title: string; item_url: string | null; thumb_url: string | null; bid_count: number | null; outcome_snapshot_id: number; outcome_path: string }>;
+}
+
+export interface PhotoSummary {
+  available: boolean;
+  ocrVersion: string;
+  minConfidence: number;
+  waiting: number;
+  lots_read: number;
+  photos_read: number;
+  last_read_at: string | null;
+  lots_with_values: number;
+  lots_using: number;
+  recent: Array<{ id: number; title: string; thumb_url: string | null; status: string; photo_fields: string[]; read_at: string; photos: number; found: Array<{ field: string; value: string; confidence: number }> }>;
 }
 
 export interface TradeMeItem {
@@ -208,6 +223,7 @@ export type Citation =
 export interface ScanRun {
   id: number;
   kind: "live" | "history";
+  photos_read: number;
   trigger: "manual" | "schedule" | string | null;
   state: string;
   phase: string;
@@ -275,6 +291,7 @@ export const api = {
   watch: (id: number, maxAllIn: number | null = null) => call(`/api/favourites/${id}`, { method: "PUT", body: JSON.stringify({ maxAllIn }) }),
   unwatch: (id: number) => call(`/api/favourites/${id}`, { method: "DELETE" }),
   photoValue: (id: number) => call<Citation>(`/api/photo-values/${id}`),
+  photoSummary: () => call<PhotoSummary>(`/api/photos/summary`),
   auctions: (scope: "live" | "closed") => call<{ auctions: Auction[] }>(`/api/auctions?scope=${scope}`),
   auction: (id: number) => call<Auction>(`/api/auctions/${id}`),
   tradeMe: (id: number, query: string) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ query }) }),

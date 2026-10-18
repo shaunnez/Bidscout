@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { account, api, type ScanRun, type ScanSettings } from "./api.ts";
+import { account, api, type PhotoSummary, type ScanRun, type ScanSettings } from "./api.ts";
 import { useNow } from "./Feed.tsx";
 import { nzDate } from "./format.ts";
 
@@ -8,7 +8,7 @@ const clock = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
-export function Scans({ scan }: { scan: { run: ScanRun | null; active: boolean; refresh: () => void } }) {
+export function Scans({ scan, openLot }: { scan: { run: ScanRun | null; active: boolean; refresh: () => void }; openLot: (id: number) => void }) {
   const [runs, setRuns] = useState<ScanRun[]>([]);
   const [maxPages, setMaxPages] = useState("200");
   const [busy, setBusy] = useState(false);
@@ -76,10 +76,12 @@ export function Scans({ scan }: { scan: { run: ScanRun | null; active: boolean; 
       </div>
       {msg && <p className="err">{msg}</p>}
 
+      <PhotoReading openLot={openLot} refreshKey={scan.run?.photos_read ?? 0} />
+
       <h2 className="h2">Recent scans</h2>
       <div className="table-wrap">
       <table className="table">
-        <thead><tr><th>#</th><th>Kind</th><th>Started</th><th>Result</th><th className="r">Requests</th><th className="r">Lots</th><th className="r">New</th><th className="r">Changed</th><th className="r">Closed</th><th>Note</th></tr></thead>
+        <thead><tr><th>#</th><th>Kind</th><th>Started</th><th>Result</th><th className="r">Requests</th><th className="r">Lots</th><th className="r">New</th><th className="r">Changed</th><th className="r">Closed</th><th className="r">Photos</th><th>Note</th></tr></thead>
         <tbody>
           {runs.map((r) => (
             <tr key={r.id}>
@@ -92,6 +94,7 @@ export function Scans({ scan }: { scan: { run: ScanRun | null; active: boolean; 
               <td className="r num">{r.lots_new.toLocaleString()}</td>
               <td className="r num">{r.lots_changed.toLocaleString()}</td>
               <td className="r num">{r.lots_closed.toLocaleString()}</td>
+              <td className="r num">{r.photos_read ? r.photos_read.toLocaleString() : <span className="muted">–</span>}</td>
               <td className="small muted">{r.stop_reason ?? r.last_error ?? ""}</td>
             </tr>
           ))}
@@ -164,6 +167,66 @@ function LiveCard({ run, onStop }: { run: ScanRun; onStop: () => void }) {
         <ul className="ticker">{run.ticker.map((t, i) => <li key={i}><span className="muted">{new Date(t.at).toLocaleTimeString("en-NZ", { timeZone: "Pacific/Auckland" })}</span> {t.text}</li>)}</ul>
       )}
       {(run.stop_reason || run.last_error) && <p className="small warn">{run.stop_reason ?? run.last_error}</p>}
+    </section>
+  );
+}
+
+const PHOTO_FIELD: Record<string, string> = { cpu: "CPU", ramGb: "RAM", storage: "Storage" };
+
+/** Where and when reading specs from photos has worked (server/photo-summary.ts). */
+function PhotoReading({ openLot, refreshKey }: { openLot: (id: number) => void; refreshKey: number }) {
+  const [s, setS] = useState<PhotoSummary | null>(null);
+  useEffect(() => {
+    api.photoSummary().then(setS).catch(() => {});
+  }, [refreshKey]);
+  if (!s) return null;
+  return (
+    <section className="photo-reading">
+      <h2 className="h2">Specs read from photos</h2>
+      <p className="sub">
+        {s.available ? "OCR is installed." : "OCR (tesseract) isn't installed here, so scans skip photos. The hosted Docker image includes it."}{" "}
+        After each live scan, computer lots missing a CPU model, RAM or storage have up to 3 photos read. A value needs {s.minConfidence}% confidence and only fills a spec the listing left out.
+      </p>
+      <dl className="auction-stats photo-stats">
+        <div><dt>Lots read</dt><dd>{s.lots_read.toLocaleString()}</dd></div>
+        <div><dt>Photos read</dt><dd>{s.photos_read.toLocaleString()}</dd></div>
+        <div className={s.lots_with_values ? "good" : ""}><dt>Found specs</dt><dd>{s.lots_with_values.toLocaleString()}</dd></div>
+        <div className={s.lots_using ? "good" : ""}><dt>Specs used</dt><dd>{s.lots_using.toLocaleString()}</dd></div>
+        <div><dt>Waiting</dt><dd>{s.waiting.toLocaleString()}</dd></div>
+      </dl>
+      {s.recent.length > 0 ? (
+        <div className="table-wrap">
+          <table className="table">
+            <thead><tr><th>Lot</th><th>Read</th><th className="r">Photos</th><th>Found</th></tr></thead>
+            <tbody>
+              {s.recent.map((r) => (
+                <tr key={r.id} className="clickable" onClick={() => openLot(r.id)}>
+                  <td>
+                    <div className="cell-lot">
+                      {r.thumb_url ? <img src={r.thumb_url} alt="" loading="lazy" /> : <span className="no-thumb" />}
+                      <div><span className="link strong">{r.title}</span>{r.status === "closed" && <div className="muted small">closed</div>}</div>
+                    </div>
+                  </td>
+                  <td className="nowrap">{nzDate(r.read_at)}</td>
+                  <td className="r num">{r.photos}</td>
+                  <td>
+                    {r.found.length === 0 ? <span className="muted">No spec text</span> : (
+                      <div className="cell-tags">
+                        {r.found.map((f, i) => (
+                          <span key={i} className={`chip ${r.photo_fields.includes(f.field) ? "used" : "quiet"}`} title={`${Math.round(f.confidence)}% confident${r.photo_fields.includes(f.field) ? ", used because the listing didn't say" : ", not used: the listing already says"}`}>
+                            {PHOTO_FIELD[f.field] ?? f.field} {f.value}{r.photo_fields.includes(f.field) ? " ✓" : ""}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : <p className="muted">No photos read yet.{s.available ? " The next live scan reads them." : ""}</p>}
+      <p className="footnote">✓ = used to fill a spec the listing left out. Open a lot to see the photo with the words boxed.</p>
     </section>
   );
 }

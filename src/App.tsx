@@ -143,7 +143,7 @@ function SignedIn({ me, setMe }: { me: Me; setMe: (m: Me | null) => void }) {
 
       <main className="body">
         {route.page === "scans" ? (
-          <Scans scan={scan} />
+          <Scans scan={scan} openLot={openLot} />
         ) : route.page === "auctions" ? (
           <Auctions openAuction={openAuction} />
         ) : route.page === "settings" ? (

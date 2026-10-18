@@ -206,6 +206,9 @@ export function LotDrawer({ id, onClose, onOpenLot, onOpenAuction }: {
               </section>
             )}
 
+            {d.photoValues.length === 0 && l.photo_ocr_at && (
+              <p className="small muted">📷 {l.photos_read || "The"} photo{l.photos_read === 1 ? "" : "s"} checked {nzDate(l.photo_ocr_at)}: no spec text found.</p>
+            )}
             {d.photoValues.length > 0 && (
               <section>
                 <h3>Read from photos <small className="muted">text found on stickers or screens in the photos</small></h3>
