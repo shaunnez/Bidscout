@@ -19,7 +19,9 @@ export interface SearchQuery {
   watch?: boolean;
   /** Only lots with a spec read from their photos. */
   photo?: boolean;
-  sort?: "closing" | "newest" | "price" | "deal" | "bids" | "ended" | "value" | "expected" | "score";
+  /** Trade Me: "1" lots compared with Trade Me listings, "opp" only opportunities. */
+  tm?: "1" | "opp";
+  sort?: "closing" | "newest" | "price" | "deal" | "bids" | "ended" | "value" | "expected" | "score" | "tm";
   page?: number;
   perPage?: number;
 }
@@ -47,7 +49,8 @@ export function parseQuery(q: Record<string, unknown>): SearchQuery {
     auction: number(q.auction),
     watch: q.watch === "1",
     photo: q.photo === "1",
-    sort: (["closing", "newest", "price", "deal", "bids", "ended", "value", "expected", "score"] as const).find((s) => s === q.sort),
+    tm: q.tm === "1" || q.tm === "opp" ? q.tm : undefined,
+    sort: (["closing", "newest", "price", "deal", "bids", "ended", "value", "expected", "score", "tm"] as const).find((s) => s === q.sort),
     page: Math.max(1, number(q.page) ?? 1),
     perPage: Math.min(100, Math.max(10, number(q.perPage) ?? 40)),
   };
@@ -64,7 +67,7 @@ const GST = `COALESCE(t.gst_rate, 15)`;
 export const ALL_IN = `(${PRICE}) * (1 + ${PREMIUM} / 100.0) * (1 + ${GST} / 100.0)`;
 const FAULT_SUFFIX = `CASE WHEN l.major_fault THEN '|fault' ELSE '' END`;
 
-export const LOT_JOINS = `
+const BASE_JOINS = `
   JOIN auctions a ON a.id = l.auction_id
   LEFT JOIN LATERAL (SELECT premium_rate, gst_rate FROM auction_terms WHERE auction_id = l.auction_id ORDER BY id DESC LIMIT 1) t ON true
   LEFT JOIN comp_stats cm ON cm.key = l.machine_key || ${FAULT_SUFFIX}
@@ -72,6 +75,35 @@ export const LOT_JOINS = `
   LEFT JOIN comp_stats cs ON cs.key = l.score_key
   LEFT JOIN favourites w ON w.lot_id = l.id AND w.user_id = $1
   LEFT JOIN users fh ON fh.id = l.friend_high_user_id`;
+
+/** Faulty or for-parts Trade Me listings only count for lots with a major fault too (as in the lot panel). */
+const TM_FAULTY = `'\\m(faulty|for parts|spares|not working|broken|cracked|won''?t (boot|turn on|power))\\M'`;
+
+/**
+ * Trade Me price (open lots): from the newest Trade Me lookup this lot used, the median of what
+ * the relevant listings ask to buy now: a Buy Now quoted from the card, or an asking or sold
+ * price. Each of those prices is cited in the lot's Trade Me panel.
+ */
+const TM_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT count(v.p)::int AS tm_n, percentile_cont(0.5) WITHIN GROUP (ORDER BY v.p) AS tm_mid, min(v.p) AS tm_low, max(pl.created_at) AS tm_at
+    FROM (SELECT k.lookup_id FROM price_lookup_lots k JOIN price_lookups p ON p.id = k.lookup_id
+          WHERE l.status = 'open' AND k.lot_id = l.id AND p.status = 'ok' ORDER BY k.used_at DESC LIMIT 1) last
+    JOIN price_lookups pl ON pl.id = last.lookup_id
+    JOIN LATERAL (
+      SELECT COALESCE(CASE WHEN i.buy_now_start IS NOT NULL THEN i.buy_now END,
+                      CASE WHEN i.verified AND i.price_kind IN ('asking', 'buy_now', 'sold') THEN i.price END) AS p
+      FROM price_lookup_items i
+      WHERE i.lookup_id = last.lookup_id AND (l.major_fault OR COALESCE(i.title, '') !~* ${TM_FAULTY})
+    ) v ON v.p > 0
+  ) tm ON true`;
+
+export const LOT_JOINS = BASE_JOINS + TM_JOIN;
+
+/** Trade Me listings needed before a lot is compared with them. */
+export const TM_MIN_LISTINGS = 2;
+/** An opportunity: expected (else current) all-in at or under this share of the Trade Me price. */
+export const TM_OPPORTUNITY_PCT = 70;
 
 /**
  * The comparable set used: the same machine when it has 3+ sales, else similar machines,
@@ -90,6 +122,10 @@ const COMP_KIND = `CASE WHEN cm.n >= 3 THEN 'machine' WHEN cl.n >= 3 THEN 'simil
 const EXPECTED = (f: "p25" | "p50" | "p75") =>
   `CASE WHEN l.status='open' AND ${COMP("n")} >= 3 THEN GREATEST(${ALL_IN}, ${COMP(f)}) END`;
 
+/** Expected all-in when there is one, else the all-in now: what the Trade Me comparison uses. */
+const TM_BASIS = () => `COALESCE(${EXPECTED("p50")}, ${ALL_IN})`;
+const TM_PCT = (v: string) => `CASE WHEN tm.tm_n >= ${TM_MIN_LISTINGS} AND tm.tm_mid > 0 THEN round(100 * ${v} / tm.tm_mid)::int END`;
+
 export const LOT_COLUMNS = `
   l.id, l.auction_id, l.lot_number, l.title, l.category, l.quantity, l.item_url, l.thumb_url, l.city, l.ends_at,
   l.current_bid, l.bid_count, l.starting_bid, l.buyer_premium, l.status, l.final_bid, l.closed_at,
@@ -107,7 +143,9 @@ export const LOT_COLUMNS = `
   (w.lot_id IS NOT NULL) AS watched, w.max_all_in,
   (SELECT count(*)::int FROM favourites f WHERE f.lot_id = l.id) AS watcher_count,
   fh.display_name AS friend_high_bidder,
-  (SELECT count(DISTINCT fb.user_id)::int FROM friend_bids fb WHERE fb.lot_id = l.id) AS friend_bidders`;
+  (SELECT count(DISTINCT fb.user_id)::int FROM friend_bids fb WHERE fb.lot_id = l.id) AS friend_bidders,
+  tm.tm_n, tm.tm_mid, tm.tm_low, tm.tm_at,
+  ${TM_PCT(ALL_IN)} AS tm_pct_now, ${TM_PCT(EXPECTED("p50"))} AS tm_pct_expected, ${TM_PCT(TM_BASIS())} AS tm_pct`;
 
 function where(q: SearchQuery, params: unknown[], skip?: string) {
   const w: string[] = [];
@@ -137,6 +175,8 @@ function where(q: SearchQuery, params: unknown[], skip?: string) {
   if (q.auction) w.push(`l.auction_id = ${p(q.auction)}`);
   if (q.watch) w.push(`w.lot_id IS NOT NULL`);
   if (q.photo) w.push(`cardinality(l.photo_fields) > 0`);
+  if (q.tm) w.push(`l.status='open' AND tm.tm_n >= ${TM_MIN_LISTINGS} AND tm.tm_mid > 0`);
+  if (q.tm === "opp") w.push(`100 * ${TM_BASIS()} / tm.tm_mid <= ${TM_OPPORTUNITY_PCT}`);
   return w.length ? `WHERE ${w.join(" AND ")}` : "";
 }
 
@@ -150,6 +190,7 @@ const ORDER: Record<string, string> = {
   value: `value_index DESC NULLS LAST, spec_score DESC NULLS LAST, l.ends_at ASC`,
   expected: `expected_mid ASC NULLS LAST, l.ends_at ASC`,
   score: `spec_score DESC NULLS LAST, l.ends_at ASC`,
+  tm: `tm_pct ASC NULLS LAST, l.ends_at ASC`,
 };
 
 /** All search queries run in parallel; $1 is always the signed-in user (for favourites). */
@@ -164,13 +205,15 @@ export async function searchLots(db: Db, q: SearchQuery, userId: number) {
     params,
   );
   const totalP: unknown[] = [userId];
-  const totalQ = db.query(`SELECT count(*)::int AS n FROM lots l ${LOT_JOINS} ${where(q, totalP)}`, totalP);
+  // Counts skip the Trade Me join unless a Trade Me filter needs it.
+  const countJoins = q.tm ? LOT_JOINS : BASE_JOINS;
+  const totalQ = db.query(`SELECT count(*)::int AS n FROM lots l ${countJoins} ${where(q, totalP)}`, totalP);
 
   // Each facet counts with every other filter applied, but not its own, so choices stay visible.
   const facet = async (name: string, expr: string, limit = 40) => {
     const fp: unknown[] = [userId];
     const r = await db.query(
-      `SELECT ${expr} AS value, count(*)::int AS n FROM lots l ${LOT_JOINS} ${where(q, fp, name)}
+      `SELECT ${expr} AS value, count(*)::int AS n FROM lots l ${countJoins} ${where(q, fp, name)}
        GROUP BY 1 HAVING ${expr} IS NOT NULL ORDER BY n DESC, 1 LIMIT ${limit}`,
       fp,
     );

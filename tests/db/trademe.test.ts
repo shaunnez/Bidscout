@@ -5,6 +5,7 @@ import type { FirecrawlClient } from "../../server/firecrawl.ts";
 import { parseRobots } from "../../server/robots.ts";
 import type { TradeMeSearcher } from "../../server/tmsearch.ts";
 import { autoPriceTick, autoProgress } from "../../server/autoprice.ts";
+import { parseQuery, searchLots } from "../../server/search.ts";
 import { getTradeMeSettings, saveTradeMeSettings } from "../../server/settings.ts";
 import { failInterruptedLookups, latestForLot, loadLookup, tradeMeLookup, tradeMeStatus } from "../../server/trademe.ts";
 
@@ -380,5 +381,37 @@ test("Automatic prices: open IT lots only, one search per shared query, own dail
   assert.match(s.autoStopped?.reason ?? "", /HTTP 406/);
   assert.equal((await saveTradeMeSettings(db, { autoEnabled: true }, null)).autoStopped, null, "turning it back on clears the reason");
   await saveTradeMeSettings(db, { autoEnabled: false }, null);
+  await db.end();
+});
+
+test("Against Trade Me: median buy-now price, faulty listings left out, % now and opportunities", async () => {
+  const db = connect(url);
+  await migrate(db);
+  await db.query(`INSERT INTO auctions (id, title) VALUES (77, 'Test') ON CONFLICT DO NOTHING`);
+  const lot = (id: number, title: string, bid: number) =>
+    db.query(`INSERT INTO lots (id, auction_id, title, device_type, status, is_it, make, model, current_bid, bid_count, buyer_premium, ends_at)
+              VALUES ($1, 77, $2, 'laptop', 'open', true, 'Dell', 'Latitude 7420', $3, 1, 15, now() + interval '1 hour')`, [id, title, bid]);
+  await lot(7100, "Dell Latitude 7420 Laptop", 100);
+  await lot(7101, "Dell Latitude 7420 Laptop (2)", 450);
+  const LAP = "https://www.trademe.co.nz/a/marketplace/computers/laptops/laptops/dell/listing";
+  const cards = [
+    [1, "Auckland Dell Latitude 7420 i5 Buy Now $400.00"], [2, "Hamilton Dell Latitude 7420 i7 Buy Now $500.00"],
+    [3, "Wellington Dell Latitude 7420 16GB Buy Now $600.00"], [4, "Nelson Dell Latitude 7420 for parts Buy Now $50.00"],
+  ].map(([n, text]) => ({ url: `${LAP}/9${n}`, listingId: `9${n}`, text: String(text) }));
+  const searcher: TradeMeSearcher = { name: "parallel", async search() { return { cards, pageSha: "sha", status: 200, text: "" }; } };
+  const user = (await db.query(`INSERT INTO users (username, display_name, password_hash) VALUES ('tmcompare','TM','x') RETURNING id`)).rows[0].id;
+  await saveTradeMeSettings(db, { enabled: true, dailyLimit: 1000 }, user);
+  const deps = { db, firecrawl: null, searchers: [searcher], robots: async () => { throw new Error("not used"); } };
+  for (const id of [7100, 7101]) await tradeMeLookup(deps, { lotId: id, userId: user, query: "Dell Latitude 7420" });
+
+  const all = await searchLots(db, parseQuery({ tm: "1", sort: "tm" }), user);
+  const [a, b] = all.items.filter((l: { id: number }) => l.id === 7100 || l.id === 7101);
+  assert.deepEqual([a.id, a.tm_n, Number(a.tm_mid), Number(a.tm_low)], [7100, 3, 500, 400], "the for-parts $50 listing doesn't count");
+  assert.equal(a.tm_pct_now, 26, "all-in $132.25 is 26% of $500");
+  assert.equal(a.tm_pct_expected, null, "no expected final without past sales");
+  assert.equal(a.tm_pct, 26, "compared on the all-in now when there's no expected final");
+  assert.deepEqual([b.id, b.tm_pct], [7101, 119], "sorted cheapest against Trade Me first");
+  const opp = await searchLots(db, parseQuery({ tm: "opp" }), user);
+  assert.deepEqual(opp.items.map((l: { id: number }) => l.id).filter((id: number) => id >= 7100 && id <= 7101), [7100], "only lots at 70% or less");
   await db.end();
 });
