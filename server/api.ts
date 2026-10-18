@@ -312,16 +312,16 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
 
 /**
  * Trade Me prices for a lot (server/trademe.ts): Trade Me search, or listing links the person pasted.
- * Reuses answers under 3 days old. A new lookup runs in the background and the reply comes at once
+ * Reuses answers under 7 days old, unless `fresh` (the Look again button). A new lookup runs in the background and the reply comes at once
  * with status 'running'; the page polls /api/trademe/lookups/:id (a long request is dropped by
  * Safari after about a minute).
  */
-app.post<{ Params: { id: string }; Body: { query?: string; links?: string[] } }>("/api/lots/:id/trademe", async (req, reply) => {
+app.post<{ Params: { id: string }; Body: { query?: string; links?: string[]; fresh?: boolean } }>("/api/lots/:id/trademe", async (req, reply) => {
   try {
     const links = Array.isArray(req.body?.links) ? req.body.links.slice(0, 20).map(String) : undefined;
     return await tradeMeLookup(
       { db, firecrawl: ctx.firecrawl, robots: ctx.tradeMeRobots, searchers: ctx.tradeMeSearchers },
-      { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? ""), links, background: true },
+      { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? ""), links, background: true, fresh: req.body?.fresh === true },
     );
   } catch (e) {
     const status = e instanceof LookupError ? e.status : 502;
@@ -330,9 +330,9 @@ app.post<{ Params: { id: string }; Body: { query?: string; links?: string[] } }>
 });
 
 /** New price in NZ for a lot (server/newprice.ts): one web search, a few seconds; answers kept 7 days. */
-app.post<{ Params: { id: string }; Body: { query?: string } }>("/api/lots/:id/newprice", async (req, reply) => {
+app.post<{ Params: { id: string }; Body: { query?: string; fresh?: boolean } }>("/api/lots/:id/newprice", async (req, reply) => {
   try {
-    return await newPriceLookup({ db, parallel: ctx.parallel }, { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? "") });
+    return await newPriceLookup({ db, parallel: ctx.parallel }, { lotId: Number(req.params.id), userId: uid(req), query: String(req.body?.query ?? ""), fresh: req.body?.fresh === true });
   } catch (e) {
     const status = e instanceof LookupError ? e.status : 502;
     return reply.code(status).send({ error: (e as Error).message });

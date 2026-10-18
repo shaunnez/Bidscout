@@ -101,14 +101,15 @@ export async function newPriceStatus(db: Db, parallel: ParallelSearch | null) {
 }
 
 /** Runs (or reuses, for 7 days) the new-price lookup for `query`, and links it to the lot. */
-export async function newPriceLookup(deps: NewPriceDeps, input: { lotId: number | null; userId: number | null; query: string; auto?: boolean }) {
+export async function newPriceLookup(deps: NewPriceDeps, input: { lotId: number | null; userId: number | null; query: string; auto?: boolean; fresh?: boolean }) {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const query = tidyQuery(input.query);
   const key = `new:${queryKey(query)}`;
   if (queryKey(query).length < 3) throw new LookupError("Search text is too short.", 400);
   if (!deps.parallel) throw new LookupError("Needs a Parallel API key (PARALLEL_API_KEY).", 503);
-  const cached = (await db.query(
+  // "Search shops again" (fresh) skips the saved answer.
+  const cached = input.fresh ? undefined : (await db.query(
     `SELECT id FROM price_lookups WHERE source='newprice' AND query_key=$1 AND status='ok' AND created_at > $2::timestamptz - make_interval(days => $3) ORDER BY id DESC LIMIT 1`,
     [key, now(), NEW_CACHE_DAYS],
   )).rows[0];

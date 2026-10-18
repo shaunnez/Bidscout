@@ -333,8 +333,9 @@ export const api = {
   photoSummary: () => call<PhotoSummary>(`/api/photos/summary`),
   auctions: (scope: "live" | "closed") => call<{ auctions: Auction[] }>(`/api/auctions?scope=${scope}`),
   auction: (id: number) => call<Auction>(`/api/auctions/${id}`),
-  newPrice: (id: number, query: string) => call<TradeMeLookup>(`/api/lots/${id}/newprice`, { method: "POST", body: JSON.stringify({ query }) }),
-  tradeMe: (id: number, query: string) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ query }) }),
+  /** `fresh` skips a saved answer (the Look again / Search shops again buttons). */
+  newPrice: (id: number, query: string, fresh = false) => call<TradeMeLookup>(`/api/lots/${id}/newprice`, { method: "POST", body: JSON.stringify({ query, fresh }) }),
+  tradeMe: (id: number, query: string, fresh = false) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ query, fresh }) }),
   tradeMeLookup: (lookupId: number) => call<TradeMeLookup>(`/api/trademe/lookups/${lookupId}`),
   tradeMeLinks: (id: number, links: string[]) => call<TradeMeLookup>(`/api/lots/${id}/trademe`, { method: "POST", body: JSON.stringify({ links }) }),
   refreshLot: (id: number) => call<{ ok: true }>(`/api/lots/${id}/refresh`, { method: "POST", body: "{}" }),

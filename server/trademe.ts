@@ -26,7 +26,7 @@ import { checkPage, filterKey, parseCard, relevantCards, searchUrl, TradeMeBlock
  */
 
 export const MAX_LISTINGS = 5;
-export const CACHE_DAYS = 3;
+export const CACHE_DAYS = 7;
 const AGENTS = ["bidscout", "firecrawlagent"];
 const LISTING = /^https:\/\/(?:www\.)?trademe\.co\.nz\/a\/marketplace\/[^?#]*?\/listing\/(\d+)/i;
 
@@ -253,7 +253,7 @@ type Plan = { kind: "search"; query: string; deviceType: string | null; lotTitle
  * Runs (or reuses) a Trade Me lookup: a web search for `query`, or the listing pages in `links`
  * (pasted by the person from their own Trade Me search, when web search doesn't find them).
  */
-export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | null; userId: number | null; query?: string; links?: string[]; background?: boolean; auto?: boolean }): Promise<any> {
+export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | null; userId: number | null; query?: string; links?: string[]; background?: boolean; auto?: boolean; fresh?: boolean }): Promise<any> {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -278,7 +278,8 @@ export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | n
     key = searchKey(query, plan.deviceType, plan.lotTitle);
   }
 
-  const cached = (await db.query(
+  // "Look again" (fresh) skips the saved answer and searches now.
+  const cached = input.fresh ? undefined : (await db.query(
     `SELECT id FROM price_lookups WHERE source='trademe' AND query_key=$1 AND status='ok' AND created_at > $2::timestamptz - make_interval(days => $3)
      ORDER BY id DESC LIMIT 1`,
     [key, now(), CACHE_DAYS],
@@ -455,7 +456,7 @@ async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number)
         failedPages++; // one unreadable listing doesn't spoil the rest
       }
     }
-    // If every page failed, it's an outage, not an answer: don't keep it for 3 days.
+    // If every page failed, it's an outage, not an answer: don't keep it for days.
     if (targets.length && failedPages === targets.length) throw new Error(`Couldn't read any of the ${targets.length} listings found; try again later.`);
     }
   } catch (e) {

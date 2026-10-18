@@ -31,7 +31,7 @@ const MAX_FAILURES_IN_A_ROW = 5;
 const BATCH = 1000;
 
 /**
- * Open lots waiting for a price, the soonest to close first: no Trade Me answer under 3 days old,
+ * Open lots waiting for a price, the soonest to close first: no Trade Me answer under 7 days old,
  * or (not computers) no new-price answer under 7 days old.
  */
 export async function lotsToPrice(db: Pick<Db, "query">, limit = BATCH) {

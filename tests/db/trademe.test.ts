@@ -89,7 +89,7 @@ test("Trade Me prices: off until enabled, reads only robots-allowed listings, co
   assert.equal(parts.verified, false, "a price not written on the page is kept but marked unconfirmed");
   await assert.rejects(db.query(`UPDATE price_lookup_items SET price=1`), /immutable/);
 
-  // Same search text within 3 days, for a lot of the same kind: the saved answer, no requests, and lot 510 remembers it too.
+  // Same search text within 7 days, for a lot of the same kind: the saved answer, no requests, and lot 510 remembers it too.
   await db.query(`INSERT INTO auctions (id, title) VALUES (77, 'Test') ON CONFLICT DO NOTHING`);
   await db.query(`INSERT INTO lots (id, auction_id, title, device_type, status) VALUES (510, 77, 'Lenovo ThinkPad T14 Gen 1 - Laptop', 'laptop', 'open') ON CONFLICT DO NOTHING`);
   const again = await tradeMeLookup(deps, { lotId: 510, userId: user, query: "thinkpad t14" });
@@ -359,7 +359,7 @@ test("Automatic prices: open IT lots only, one search per shared query, own dail
 
   searched.length = 0;
   assert.equal((await autoPriceTick(deps)).looked, 0);
-  assert.equal(searched.length, 0, "lots with an answer under 3 days old wait");
+  assert.equal(searched.length, 0, "lots with an answer under 7 days old wait");
 
   // Several at once, but never more than the concurrency, and each search once.
   await lot(7010, "Acer Aspire 5 Laptop", "laptop", "Acer", "Aspire 5");
@@ -414,6 +414,9 @@ test("Against Trade Me: median buy-now price, faulty listings left out, % now an
   await saveTradeMeSettings(db, { enabled: true, dailyLimit: 1000 }, user);
   const deps = { db, firecrawl: null, searchers: [searcher], robots: async () => { throw new Error("not used"); } };
   for (const id of [7100, 7101]) await tradeMeLookup(deps, { lotId: id, userId: user, query: "Dell Latitude 7420" });
+  const saved = await tradeMeLookup(deps, { lotId: 7100, userId: user, query: "Dell Latitude 7420" });
+  const fresh = await tradeMeLookup(deps, { lotId: 7100, userId: user, query: "Dell Latitude 7420", fresh: true });
+  assert.deepEqual([saved.cached, fresh.cached, fresh.id > saved.id], [true, false, true], "Look again searches fresh");
 
   const all = await searchLots(db, parseQuery({ tm: "1", sort: "tm" }), user);
   const [a, b] = all.items.filter((l: { id: number }) => l.id === 7100 || l.id === 7101);
@@ -459,7 +462,9 @@ test("New price in NZ: shop prices quoted, cached 7 days, on cards with the whol
   assert.equal(i0.excerpt.slice(i0.quote_start, i0.quote_end), "$949.00");
   assert.equal((await newPriceLookup({ db, parallel: search }, { lotId: 7201, userId: user, query: "EPEVER SHI2000-22" })).cached, true);
   assert.equal(searches.length, 1, "the second lot reuses the answer");
-  assert.equal((await latestForLot(db, 7201, "newprice"))?.id, r.id);
+  const again = await newPriceLookup({ db, parallel: search }, { lotId: 7201, userId: user, query: "EPEVER SHI2000-22", fresh: true });
+  assert.deepEqual([again.cached, searches.length], [false, 2], "Search shops again searches fresh");
+  assert.equal((await latestForLot(db, 7201, "newprice"))?.id, again.id, "the fresh answer is the lot's newest");
   assert.equal(await latestForLot(db, 7201), null, "not a Trade Me answer");
 
   const res = await searchLots(db, parseQuery({ tm: "1", sort: "tm" }), user);
@@ -485,7 +490,7 @@ test("New price in NZ: shop prices quoted, cached 7 days, on cards with the whol
   await autoPriceTick({ db, parallel, search, gapMs: 0, sleep: async () => {} });
   assert.deepEqual(tmSearched.sort(), ["EPEVER SHI2000-22", "Midj Bold Mirror"], "pallet lots are skipped");
   assert.equal(searches.length, 0, "the shop answer is still fresh (7 days), so no new search");
-  assert.equal((await latestForLot(db, 7201, "newprice"))?.id, r.id, "relinked from the saved answer");
+  assert.equal((await latestForLot(db, 7201, "newprice"))?.id, again.id, "relinked from the saved answer");
   await saveTradeMeSettings(db, { autoEnabled: false }, null);
   await db.end();
 });

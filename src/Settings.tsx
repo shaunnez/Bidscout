@@ -67,7 +67,7 @@ export function Settings({ me }: { me: Me }) {
           <p className="muted small">
             A button on each lot that runs Trade Me's own search for it (one results page, two at most) and reads the listings
             shown: title, price, location and closing date, each price quoted from the results page. It runs when someone
-            presses the button (or automatically, below), through Parallel when it's set up, else a plain browser; if Trade Me blocks it, it stops. Answers are reused for 3 days.
+            presses the button (or automatically, below), through Parallel when it's set up, else a plain browser; if Trade Me blocks it, it stops. Answers are reused for 7 days; Look again always searches fresh.
             Trade Me's robots.txt asks bots not to use its search pages; you chose to use them for this (18 Oct 2026).
           </p>
           {!tm.trademeKeySet && <p className="warn small">Needs Chromium (included in the Docker image) or a Firecrawl API key (FIRECRAWL_API_KEY).</p>}
@@ -89,7 +89,7 @@ export function Settings({ me }: { me: Me }) {
                 Looks up every open lot the way the buttons would (bulk, pallet and mixed lots are skipped): Trade Me prices for
                 all of them, and the new price at New Zealand shops for products with a model number that aren't computers.
                 Through Parallel only, about 2 searches a second. Lots that need the same search share one answer; Trade Me answers
-                are kept 3 days and new prices 7, then refreshed while the lot is open. New lots are picked up after each scan. If
+                and new prices are kept 7 days, then refreshed while the lot is open. New lots are picked up after each scan. If
                 Trade Me refuses Parallel, or lookups keep failing, it turns itself off and says why here.
               </p>
               <label className="check">
