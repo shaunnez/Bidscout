@@ -638,16 +638,20 @@ function NewPrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; state
   const [res, setRes] = useState<TradeMeLookup | null>(state.latest);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  useEffect(() => { setRes(state.latest); setErr(null); }, [lot.id]);
+  // The lot on screen: an answer for a lot left before it came back is dropped.
+  const shown = useRef(lot.id);
+  useEffect(() => { shown.current = lot.id; setRes(state.latest); setErr(null); setBusy(false); }, [lot.id]);
   const run = async () => {
+    const forLot = lot.id;
     setBusy(true);
     setErr(null);
     try {
-      setRes(await api.newPrice(lot.id, query, !!res));
+      const r = await api.newPrice(forLot, query, !!res);
+      if (shown.current === forLot) setRes(r);
     } catch (e) {
-      setErr((e as Error).message);
+      if (shown.current === forLot) setErr((e as Error).message);
     } finally {
-      setBusy(false);
+      if (shown.current === forLot) setBusy(false);
     }
   };
   const prices = (res?.items ?? []).filter((i) => i.verified && i.price).map((i) => Number(i.price));

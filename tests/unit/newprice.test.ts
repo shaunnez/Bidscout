@@ -30,3 +30,14 @@ test("shop prices: the price nearest the model, NZ shops only, not savings, old 
   const b = shopPrice(hit("https://www.powershop.nz/p", ["Free shipping over $100. EPEVER SHI2000-22 — $1,020.50"]), "EPEVER SHI2000-22");
   assert.equal(b?.price, 1020.5, "the shipping threshold isn't the price");
 });
+
+test("shop prices: RRP, list and ex-GST prices aren't the shop's price; the model, not the brand, must be named; titles redacted", () => {
+  const a = shopPrice(hit("https://shop.co.nz/p", ["Model SHI2000-22 — RRP $1,099; our price $949"]), "EPEVER SHI2000-22");
+  assert.equal(a?.price, 949);
+  const b = shopPrice(hit("https://shop.co.nz/p", ["SHI2000-22 ex GST $800.00, incl GST $920.00"]), "EPEVER SHI2000-22");
+  assert.equal(b?.price, 920);
+  assert.equal(productMention("3M tape, great value $12", "3M 7100123456"), -1, "the brand alone isn't the product");
+  assert.equal(productMention("3M 7100123456 safety glasses $12", "3M 7100123456"), 3);
+  const c = shopPrice({ url: "https://shop.co.nz/p", title: "Call 021 234 5678 for SHI2000-22", excerpts: ["SHI2000-22 $949"] }, "EPEVER SHI2000-22");
+  assert.ok(c && !c.title!.includes("234 5678"), "contact details removed from the title");
+});

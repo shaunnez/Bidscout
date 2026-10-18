@@ -111,8 +111,8 @@ const NEW_JOIN = `
 /** A wholesale or RRP price written in the title ("Wholesale $4,950.00"), with the words it came from. */
 const LIST_JOIN = `
   LEFT JOIN LATERAL (
-    SELECT m[1] AS list_quote, replace(m[3], ',', '')::numeric AS list_price, (m[2] IS NOT NULL) AS list_rrp
-    FROM regexp_match(l.title, '((?:total\\s+)?(?:wholesale|(rrp)|retail)(?:\\s+total)?(?:\\s+price)?\\s*:?\\s*\\$\\s*(\\d[\\d,]*(?:\\.\\d{1,3})?))', 'i') m
+    SELECT m[1] AS list_quote, replace(m[3], ',', '')::numeric AS list_price, lower(m[2]) AS list_kind
+    FROM regexp_match(l.title, '((?:total\\s+)?(wholesale|rrp|retail)(?:\\s+total)?(?:\\s+price)?\\s*:?\\s*\\$\\s*(\\d[\\d,]*(?:\\.\\d{1,3})?))', 'i') m
   ) lp ON true`;
 
 export const LOT_JOINS = BASE_JOINS + TM_JOIN + NEW_JOIN + LIST_JOIN;
@@ -170,7 +170,7 @@ export const LOT_COLUMNS = `
   ${TM_PCT(ALL_IN)} AS tm_pct_now, ${TM_PCT(EXPECTED("p50"))} AS tm_pct_expected, ${TM_PCT(TM_BASIS())} AS tm_pct,
   np.new_n, np.new_mid, np.new_at,
   ${NEW_PCT(ALL_IN)} AS new_pct_now, ${NEW_PCT(EXPECTED("p50"))} AS new_pct_expected, ${NEW_PCT(TM_BASIS())} AS new_pct,
-  lp.list_price::float8 AS list_price, lp.list_quote, lp.list_rrp, strpos(l.title, lp.list_quote) - 1 AS list_start,
+  lp.list_price::float8 AS list_price, lp.list_quote, lp.list_kind, strpos(l.title, lp.list_quote) - 1 AS list_start,
   CASE WHEN lp.list_price > 0 THEN round(100 * ${ALL_IN} / lp.list_price)::int END AS list_pct_now,
   (${OPP_SCORE()})::float8 AS opp_score`;
 
