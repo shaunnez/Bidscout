@@ -157,6 +157,8 @@ export interface TradeMeLookup {
   searched: number;
   found: number;
   candidates: number | null;
+  blocked: number | null;
+  /** The web searches run; empty for pasted links; null for lookups saved before this was recorded (web searches). */
   queries: string[] | null;
   created_at: string;
   items: TradeMeItem[];

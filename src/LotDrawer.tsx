@@ -542,7 +542,11 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
         <>
           <p className="tm-summary">
             {priced.length === 0 && res.found === 0 && res.queries?.length
-              ? <>Web search found {res.searched} result{res.searched === 1 ? "" : "s"}, {res.candidates ?? 0} of them Trade Me listings (searched {res.queries.map((q) => `“${q}”`).join(", then ")}). Web search doesn't see every Trade Me listing: open the Trade Me link above and paste the listings you want into the box above.</>
+              ? <>
+                  Web search found {res.searched} result{res.searched === 1 ? "" : "s"}, {res.candidates ?? 0} of them Trade Me listings
+                  {res.blocked ? ` (${res.blocked} not readable under Trade Me's robots.txt)` : ""} (searched {res.queries.map((q) => `“${q}”`).join(", then ")}).
+                  {(res.candidates ?? 0) - (res.blocked ?? 0) <= 0 && " Web search doesn't see every Trade Me listing: open the Trade Me link above and paste the listings you want into the box above."}
+                </>
               : priced.length === 0
               ? <>No confirmed prices from {res.found} listing{res.found === 1 ? "" : "s"}.</>
               : <>
@@ -579,7 +583,7 @@ function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; s
             </div>
           )}
           <p className="footnote">
-            {res.queries?.length ? <>Web search for {res.queries.map((q) => `“${q}”`).join(", then ")}</> : <>{res.query} (links you pasted)</>}, {nzDate(res.created_at)}{res.cached ? " (saved answer)" : ""}. Each price opens the words it came from on the listing.
+            {res.queries === null ? <>Web search for “{res.query}”</> : res.queries.length ? <>Web search for {res.queries.map((q) => `“${q}”`).join(", then ")}</> : <>{res.query} (links you pasted)</>}, {nzDate(res.created_at)}{res.cached ? " (saved answer)" : ""}. Each price opens the words it came from on the listing.
             Greyed prices couldn't be found in the page text and aren't counted. Trade Me prices are asking or sold prices before any fees.
           </p>
         </>

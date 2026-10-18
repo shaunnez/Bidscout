@@ -68,6 +68,8 @@ test("Trade Me prices: off until enabled, reads only robots-allowed listings, co
   assert.deepEqual(calls, ["search ThinkPad T14", `scrape ${TM}/listing/1`, `scrape ${TM}/listing/2`, `scrape ${TM}/listing/4`],
     "never the search page, other sites, duplicates, or a listing robots.txt disallows");
   assert.equal(r.found, 3);
+  assert.equal(r.candidates, 4, "four distinct Trade Me listings in the search results");
+  assert.equal(r.blocked, 1, "one of them disallowed by robots.txt, counted but not read");
   const [sold, live, parts] = r.items;
   assert.equal(sold.status, "sold");
   assert.equal(Number(sold.price), 520);

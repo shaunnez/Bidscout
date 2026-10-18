@@ -204,7 +204,14 @@ const running = new Map<string, Promise<unknown>>();
 
 /** A shorter search: drops CPU, memory and storage words, keeping the make and model (at most 5 words). */
 export function broaderQuery(q: string): string | null {
-  const words = q.split(/\s+/).filter((w) => !/^(?:i[3579]-?\w*|ryzen|core|celeron|pentium|xeon|\d+(?:\.\d+)?\s?(?:gb|tb)|ssd|hdd|nvme|emmc|desktop|laptop|tablet|aio)$/i.test(w));
+  // Whole processor names first (several words each), then single CPU, memory and storage words.
+  const stripped = q
+    .replace(/\b(?:AMD\s+)?Ryzen\s+\d+(?:\s+PRO)?(?:\s+\d{4}\w*)?/gi, " ")
+    .replace(/\bApple\s+M\d(?:\s+(?:Pro|Max|Ultra))?\b/gi, " ")
+    .replace(/\b(?:Intel\s+)?Core\s+Ultra\s+\d(?:\s+\d{3}\w*)?/gi, " ")
+    .replace(/\b(?:Intel\s+)?Xeon(?:\s+(?:Silver|Gold|Bronze|Platinum|E\d-?\w*|W-?\w*))?(?:\s+\d{4}\w*)?/gi, " ")
+    .replace(/\b(?:Intel\s+)?(?:Celeron|Pentium)(?:\s+\w*\d\w*)?/gi, " ");
+  const words = stripped.trim().split(/\s+/).filter((w) => !/^(?:i[3579]-?\w*|ryzen|core|celeron|pentium|xeon|\d+(?:\.\d+)?\s?(?:gb|tb)|ssd|hdd|nvme|emmc|desktop|laptop|tablet|aio)$/i.test(w));
   const b = words.slice(0, 5).join(" ");
   return b.split(" ").length >= 2 && queryKey(b) !== queryKey(q) ? b : null;
 }
@@ -287,6 +294,7 @@ async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number)
   let credits = 0;
   let searched = 0;
   let candidates = 0;
+  let blocked = 0;
   const queries: string[] = [];
   let error: string | null = null;
   try {
@@ -296,7 +304,8 @@ async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number)
     let targets: Target[];
     if (plan.kind === "links") {
       targets = plan.targets.filter(allowed);
-      candidates = targets.length;
+      candidates = plan.targets.length;
+      blocked = candidates - targets.length;
       if (!targets.length) throw new Error("Trade Me's robots.txt doesn't allow reading those pages.");
     } else {
       const seen = new Set<string>();
@@ -310,13 +319,14 @@ async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number)
         searched += found.results.length;
         for (const r of found.results) {
           const l = listingUrl(r.url);
-          if (l && !seen.has(l.listingId) && allowed(l)) {
-            seen.add(l.listingId);
-            targets.push(l);
-          }
+          if (!l || seen.has(l.listingId)) continue;
+          seen.add(l.listingId);
+          candidates++;
+          // Listings robots.txt disallows are counted (so the panel can say so) but never read.
+          if (allowed(l)) targets.push(l);
+          else blocked++;
         }
       }
-      candidates = targets.length;
       targets = targets.slice(0, MAX_LISTINGS);
     }
     let failedPages = 0;
@@ -348,8 +358,8 @@ async function run(deps: LookupDeps, id: number, plan: Plan, sleep: (ms: number)
           it.buy_now_end, it.bid_count, it.condition, it.closes, it.location, it.excerpt, it.quote_start, it.quote_end, it.verified, it.page_sha256, it.fetched_at],
       );
     await c.query(
-      `UPDATE price_lookups SET status=$2, error=$3, searched=$4, found=$5, credits=$6, candidates=$7, queries=$8 WHERE id=$1`,
-      [id, error ? "failed" : "ok", error, searched, items.length, credits || null, candidates, queries],
+      `UPDATE price_lookups SET status=$2, error=$3, searched=$4, found=$5, credits=$6, candidates=$7, queries=$8, blocked=$9 WHERE id=$1`,
+      [id, error ? "failed" : "ok", error, searched, items.length, credits || null, candidates, queries, blocked],
     );
   });
   if (error) throw new LookupError(error, 502);
