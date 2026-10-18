@@ -42,7 +42,17 @@ export interface Lot {
   comp_p25: number | null;
   comp_p50: number | null;
   comp_p75: number | null;
-  comp_kind: "machine" | "similar" | null;
+  comp_kind: "machine" | "similar" | "spec" | null;
+  expected_low: number | null;
+  expected_mid: number | null;
+  expected_high: number | null;
+  spec_score: number | null;
+  score_parts: Array<{ label: string; points: number }> | null;
+  score_incomplete: boolean;
+  photo_fields: string[];
+  value_index: number | null;
+  spec_n: number | null;
+  spec_p50: number | null;
   watched: boolean;
   max_all_in: number | null;
   watcher_count: number;
@@ -82,6 +92,11 @@ export interface LotDetail {
     outcome_snapshot_id: number | null;
     outcome_path: string | null;
     auction_url: string | null;
+    auction_city: string | null;
+    auction_address: string | null;
+    auction_lots_close_at: string | null;
+    auction_instructions: string | null;
+    auction_ends_at: string | null;
     detail_read_at: string | null;
   };
   specs: SpecValue[];
@@ -89,8 +104,46 @@ export interface LotDetail {
   terms: { premium_rate: number | null; gst_rate: number | null; payment_due: string | null } | null;
   revisions: Array<{ id: number; created_at: string }>;
   watchers: Array<{ id: number; display_name: string; added_at: string }>;
+  photoValues: Array<{ id: number; field: string; value: string; quote: string; confidence: number; image_url: string }>;
   friendBids: Array<{ user_id: number; display_name: string; kind: "high_bidder" | "bid"; amount: number | null; bid_at: string | null; seen_at: string }>;
-  comps: Array<{ id: number; title: string; final_bid: number; all_in: number; closed_at: string; faults: string[]; auction_title: string; item_url: string | null; outcome_snapshot_id: number; outcome_path: string }>;
+  comps: Array<{ id: number; title: string; final_bid: number; all_in: number; closed_at: string; faults: string[]; auction_title: string; item_url: string | null; thumb_url: string | null; bid_count: number | null; outcome_snapshot_id: number; outcome_path: string }>;
+}
+
+export interface Auction {
+  id: number;
+  title: string;
+  starts_at: string | null;
+  ends_at: string | null;
+  lots_close_at: string | null;
+  city: string | null;
+  region: string | null;
+  address: string | null;
+  postcode: string | null;
+  instructions: string | null;
+  url: string | null;
+  thumb_url: string | null;
+  item_count: number | null;
+  live: boolean;
+  lots: number;
+  it_lots: number;
+  open_lots: number;
+  lots_with_bids: number;
+  bids: number;
+  next_close: string | null;
+  sold: number;
+  sold_total: number | null;
+  top_final: number | null;
+  last_closed: string | null;
+  bid_total: number | null;
+  friend_high: number;
+  group_favourites: number;
+  my_favourites: number;
+  top_categories: string[] | null;
+  thumbs: string[] | null;
+  premium_rate: number | null;
+  gst_rate: number | null;
+  payment_due: string | null;
+  good_value: number;
 }
 
 export interface SnapshotMeta {
@@ -106,11 +159,13 @@ export interface SnapshotMeta {
 
 export type Citation =
   | { kind: "spec"; field: string; value: string; method: string; source: string; path: string; text: string; start: number; end: number; quote: string; verified: boolean; lotUrl?: string; snapshot: SnapshotMeta }
-  | { kind: "field"; path: string; value: unknown; context: Record<string, unknown> | null; snapshot: SnapshotMeta };
+  | { kind: "field"; path: string; value: unknown; context: Record<string, unknown> | null; snapshot: SnapshotMeta }
+  | { kind: "photo"; field: string; value: string; quote: string; confidence: number; boxes: Array<[number, number, number, number]>; width: number | null; height: number | null; image: string; imageUrl: string; sha256: string; ocr: string; readAt: string; lotUrl: string | null };
 
 export interface ScanRun {
   id: number;
   kind: "live" | "history";
+  trigger: "manual" | "schedule" | string | null;
   state: string;
   phase: string;
   options: Record<string, unknown>;
@@ -176,6 +231,9 @@ export const api = {
   cancelScan: (id: number) => call(`/api/scans/${id}/cancel`, { method: "POST", body: "{}" }),
   watch: (id: number, maxAllIn: number | null = null) => call(`/api/favourites/${id}`, { method: "PUT", body: JSON.stringify({ maxAllIn }) }),
   unwatch: (id: number) => call(`/api/favourites/${id}`, { method: "DELETE" }),
+  photoValue: (id: number) => call<Citation>(`/api/photo-values/${id}`),
+  auctions: (scope: "live" | "closed") => call<{ auctions: Auction[] }>(`/api/auctions?scope=${scope}`),
+  auction: (id: number) => call<Auction>(`/api/auctions/${id}`),
   refreshLot: (id: number) => call<{ ok: true }>(`/api/lots/${id}/refresh`, { method: "POST", body: "{}" }),
 };
 

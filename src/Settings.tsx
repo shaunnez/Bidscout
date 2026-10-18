@@ -52,7 +52,8 @@ export function Settings({ me }: { me: Me }) {
       {me.is_admin && (
         <section className="card">
           <h3>People</h3>
-          <table className="runs">
+          <div className="table-wrap">
+          <table className="table">
             <thead><tr><th>Username</th><th>Name</th><th>number8 ID</th><th>Last sign-in</th><th>Role</th><th></th></tr></thead>
             <tbody>
               {users.map((u) => (
@@ -76,6 +77,7 @@ export function Settings({ me }: { me: Me }) {
               ))}
             </tbody>
           </table>
+          </div>
           <form className="new-user" onSubmit={(e) => { e.preventDefault(); run(() => account.createUser(nu), `Created ${nu.username}.`).then(() => setNu({ username: "", display_name: "", password: "", is_admin: false })); }}>
             <h4>Add someone</h4>
             <input placeholder="username" value={nu.username} onChange={(e) => setNu({ ...nu, username: e.target.value })} />

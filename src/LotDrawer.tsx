@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { FAULT_LABEL } from "../shared/specs/computer.ts";
-import { api, type Citation, type LotDetail, type SpecValue } from "./api.ts";
+import { api, type Auction, type Citation, type LotDetail, type SpecValue } from "./api.ts";
+import { auctionParts, saleReason } from "./auction.ts";
+import { lookupQuery } from "./lookup.ts";
+import { closingWindow, payBy } from "./Auctions.tsx";
 import { DealBadge, MAJOR, specChips, useNow } from "./Feed.tsx";
 import { money, nzDate, nzShort, timeLeft } from "./format.ts";
 
@@ -13,7 +16,9 @@ const SPEC_ORDER = ["deviceType", "make", "model", "cpu", "cpuGen", "ramGb", "st
 
 type CiteRequest = { title: string; load: () => Promise<Citation> };
 
-export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () => void; onOpenLot: (id: number) => void }) {
+export function LotDrawer({ id, onClose, onOpenLot, onOpenAuction }: {
+  id: number; onClose: () => void; onOpenLot: (id: number) => void; onOpenAuction: (a: Pick<Auction, "id" | "live">) => void;
+}) {
   const [d, setD] = useState<LotDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [cite, setCite] = useState<CiteRequest | null>(null);
@@ -66,7 +71,12 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
       <aside className="drawer" aria-label="Lot details">
         <div className="drawer-bar">
           <button className="icon" onClick={onClose} aria-label="Close">✕</button>
-          {l && <span className="bar-title">Lot {l.lot_number} · {l.auction_title}</span>}
+          {l && (
+            <span className="bar-title">
+              Lot {l.lot_number} ·{" "}
+              <button className="link" onClick={() => onOpenAuction({ id: l.auction_id, live: l.status === "open" })} title={l.auction_title}>{auctionParts(l.auction_title).headline}</button>
+            </span>
+          )}
           {l && <button className={`watch ${watched ? "on" : ""}`} onClick={toggleWatch}>{watched ? "★ Favourite" : "☆ Favourite"}</button>}
         </div>
         {err && <p className="err">{err}</p>}
@@ -84,6 +94,7 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
               </div>
             )}
             <h2 className="lot-title">{l.title}</h2>
+            {l.photo_fields.length > 0 && <p className="small muted">{l.photo_fields.map((f) => FIELD_LABEL[f] ?? f).join(", ")} read from the photos (see below).</p>}
             <div className="chips">
               {specChips(l).map((c) => <span key={c} className="chip">{c}</span>)}
               {l.faults.map((f) => <span key={f} className={`fault ${MAJOR.has(f) ? "major" : ""}`}>{FAULT_LABEL[f] ?? f}</span>)}
@@ -121,6 +132,36 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
               {l.item_url && <a className="primary" href={l.item_url} target="_blank" rel="noreferrer">{l.status === "closed" ? "View on number8.bid" : "Bid on number8.bid"} ↗</a>}
             </section>
 
+            {(l.expected_mid !== null || l.spec_score !== null) && (
+              <section className="likely">
+                <h3>What it's likely to cost</h3>
+                {l.expected_mid !== null ? (
+                  <p>
+                    Expected final <b>{money(l.expected_low)}–{money(l.expected_high)}</b> all-in (middle {money(l.expected_mid)}), from {l.comp_n} past
+                    sale{l.comp_n === 1 ? "" : "s"} of {l.comp_kind === "machine" ? "the same machine" : l.comp_kind === "similar" ? "similar machines" : "machines with a similar spec score"}, listed below.
+                    {l.status === "open" && (l.all_in ?? 0) >= (l.expected_low ?? 0) ? " The current bid is already in that range." : ""}
+                  </p>
+                ) : l.status === "open" ? <p className="muted">Not enough past sales to estimate a final price yet.</p> : null}
+                {l.value_index !== null && l.comp_kind !== "spec" && (
+                  <p>
+                    <b>Value {l.value_index}</b>: machines with this spec score typically close at {money(l.spec_p50)} ({l.spec_n} sales).
+                    {l.value_index >= 115 ? " This one is expected to cost less than typical for what it is." : l.value_index <= 85 ? " This one usually sells for more than typical for its spec." : " About typical for its spec."}
+                  </p>
+                )}
+                {l.spec_score !== null && l.score_parts && (
+                  <details>
+                    <summary>Spec score {l.spec_score}{l.score_incomplete ? " (RAM or storage not stated)" : ""}</summary>
+                    <ul className="score-parts">
+                      {l.score_parts.map((p, i) => <li key={i}><span>{p.label}</span><b>{p.points ? `+${p.points}` : ""}</b></li>)}
+                    </ul>
+                    <p className="small muted">BidScout's own measure from the cited specs (CPU tier and age, RAM, storage, faults). Not a benchmark.</p>
+                  </details>
+                )}
+              </section>
+            )}
+
+            <PriceLookup lot={l} />
+
             <section className="social-box">
               <div className="social-head">
                 <h3>Friends</h3>
@@ -140,6 +181,8 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
                 {d.watchers.length ? <>Favourited by {d.watchers.map((w) => w.display_name).join(", ")}.</> : "Nobody has favourited this lot."}
               </p>
             </section>
+
+            <AuctionBox lot={l} terms={d.terms} onOpen={() => onOpenAuction({ id: l.auction_id, live: l.status === "open" })} />
 
             {specs.length > 0 && (
               <section>
@@ -163,26 +206,58 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
               </section>
             )}
 
+            {d.photoValues.length > 0 && (
+              <section>
+                <h3>Read from photos <small className="muted">text found on stickers or screens in the photos</small></h3>
+                <table className="specs">
+                  <tbody>
+                    {d.photoValues.map((v) => (
+                      <tr key={v.id}>
+                        <th>{FIELD_LABEL[v.field] ?? v.field}{l.photo_fields.includes(v.field) && <span className="from-photo">used</span>}</th>
+                        <td>
+                          <button className="cite" onClick={() => setCite({ title: `${FIELD_LABEL[v.field] ?? v.field} (photo)`, load: () => api.photoValue(v.id) })}>
+                            {v.value}
+                            <span className="q">“{v.quote}” · {Math.round(v.confidence)}% confident</span>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="footnote">Read by OCR. A photo value is only used when the listing doesn't state that spec and the text is at least 60% confident.</p>
+              </section>
+            )}
+
             <section>
-              <h3>Past sales of this machine</h3>
+              <h3>{l.comp_kind === "spec" ? "Past sales with a similar spec" : l.comp_kind === "similar" ? "Past sales of similar machines" : l.is_it ? "Past sales of this machine" : "Past sales"}</h3>
               {d.comps.length === 0 ? (
                 <p className="muted">No closed number8 lots with the same {l.is_it ? "machine or similar spec" : "title"} yet. Reading past sales on the Scans page builds this up.</p>
               ) : (
                 <>
-                  <p className="muted small">{l.comp_kind === "similar" ? "Similar spec (same type, CPU family and generation, RAM band and drive type)" : "Same make, model, CPU, RAM and storage"}{l.major_fault ? ", also with a major fault" : ", without major faults"}. All-in uses each sale's premium and 15% GST.</p>
-                  <table className="comps">
-                    <thead><tr><th>Closed</th><th>Lot</th><th className="r">Final bid</th><th className="r">All-in</th></tr></thead>
-                    <tbody>
-                      {d.comps.map((c) => (
-                        <tr key={c.id}>
-                          <td>{nzShort(c.closed_at)}</td>
-                          <td><button className="link" onClick={() => onOpenLot(c.id)}>{c.title}</button>{c.faults.length > 0 && <span className="muted small"> · {c.faults.map((f) => FAULT_LABEL[f] ?? f).join(", ")}</span>}</td>
-                          <td className="r"><button className="cite inline" onClick={() => setCite({ title: "Final bid", load: () => api.field(c.outcome_snapshot_id, `${c.outcome_path}.current_bid`) })}>{money(c.final_bid)}</button></td>
-                          <td className="r">{money(c.all_in)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <p className="muted small">{l.comp_kind === "similar" ? "Similar machines (same type, CPU family and generation, RAM band and drive type)" : l.comp_kind === "spec" ? "Similar spec score (same form factor, within half a point)" : "Same make, model, CPU, RAM and storage"}{l.major_fault ? ", also with a major fault" : ", without major faults"}. All-in uses each sale's premium and 15% GST.</p>
+                  <div className="table-wrap">
+                    <table className="table compact">
+                      <thead><tr><th>Lot</th><th>Closed</th><th className="r">Final bid</th><th className="r">All-in</th></tr></thead>
+                      <tbody>
+                        {d.comps.map((c) => (
+                          <tr key={c.id}>
+                            <td>
+                              <div className="cell-lot">
+                                {c.thumb_url ? <img src={c.thumb_url} alt="" loading="lazy" /> : <span className="no-thumb" />}
+                                <div>
+                                  <button className="link" onClick={() => onOpenLot(c.id)}>{c.title}</button>
+                                  {c.faults.length > 0 && <div className="cell-tags">{c.faults.map((f) => <span key={f} className={`fault ${MAJOR.has(f) ? "major" : ""}`}>{FAULT_LABEL[f] ?? f}</span>)}</div>}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="nowrap">{nzShort(c.closed_at)}{c.bid_count ? <div className="muted small">{c.bid_count} bids</div> : null}</td>
+                            <td className="r num"><button className="cite inline" onClick={() => setCite({ title: "Final bid", load: () => api.field(c.outcome_snapshot_id, `${c.outcome_path}.current_bid`) })}>{money(c.final_bid)}</button></td>
+                            <td className="r num"><b>{money(c.all_in)}</b></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </>
               )}
             </section>
@@ -214,7 +289,6 @@ export function LotDrawer({ id, onClose, onOpenLot }: { id: number; onClose: () 
             <section>
               <h3>Listing text</h3>
               <pre className="desc">{l.description || "No description."}</pre>
-              {d.terms?.payment_due && <p className="small muted">Payment due {d.terms.payment_due}.</p>}
               <p className="small muted">
                 Category {l.category ?? "not set"} · first seen {nzDate(l.first_seen)} · {d.revisions.length} listing version{d.revisions.length === 1 ? "" : "s"}
                 {l.detail_read_at ? ` · lot page read ${nzDate(l.detail_read_at)}` : ""}
@@ -282,6 +356,24 @@ function SourcePanel({ request, onClose }: { request: CiteRequest; onClose: () =
             <p className="small muted">Field <code>{c.path}</code> of the stored response, as cleaned text (HTML removed).</p>
           </>
         )}
+        {c?.kind === "photo" && (
+          <>
+            <p className="verdict ok">Text read from this photo by OCR · {Math.round(c.confidence)}% confident</p>
+            <p className="small muted">{c.value} · found as “{c.quote}”</p>
+            <div className="photo-cite">
+              <img src={c.image} alt="Lot photo" />
+              {c.width && c.height && c.boxes.map(([x, y, w, h], i) => (
+                <span key={i} className="box" ref={i === 0 ? (mark as React.RefObject<HTMLSpanElement>) : undefined}
+                  style={{ left: `${(x / c.width!) * 100}%`, top: `${(y / c.height!) * 100}%`, width: `${(w / c.width!) * 100}%`, height: `${(h / c.height!) * 100}%` }} />
+              ))}
+            </div>
+            <dl className="meta-list">
+              <dt>Photo</dt><dd><a href={c.imageUrl} target="_blank" rel="noreferrer">Original on number8.bid ↗</a></dd>
+              <dt>Read</dt><dd>{nzDate(c.readAt)} · <code>{c.ocr}</code></dd>
+              <dt>Stored copy</dt><dd><code>sha256 {c.sha256.slice(0, 16)}…</code></dd>
+            </dl>
+          </>
+        )}
         {c?.kind === "field" && (
           <>
             <p className="verdict ok">Value as published in the stored response</p>
@@ -291,7 +383,7 @@ function SourcePanel({ request, onClose }: { request: CiteRequest; onClose: () =
             </div>
           </>
         )}
-        {c && (
+        {c && c.kind !== "photo" && (
           <dl className="meta-list">
             <dt>Fetched</dt><dd>{nzDate(c.snapshot.fetchedAt)}</dd>
             <dt>Request</dt><dd><code>{c.snapshot.method} {c.snapshot.url.replace("https://www.number8.bid", "")}</code>{c.snapshot.request && <div><code className="wrap">{decodeURIComponent(c.snapshot.request)}</code></div>}</dd>
@@ -301,5 +393,59 @@ function SourcePanel({ request, onClose }: { request: CiteRequest; onClose: () =
         )}
       </div>
     </aside>
+  );
+}
+
+/** The auction this lot is in: where to collect, when it closes, the fees, and links to it. */
+function AuctionBox({ lot, terms, onOpen }: { lot: LotDetail["lot"]; terms: LotDetail["terms"]; onOpen: () => void }) {
+  const { headline, location, unreserved } = auctionParts(lot.auction_title);
+  const reason = saleReason(lot.auction_title, lot.auction_instructions);
+  const closes = closingWindow({ ends_at: lot.auction_ends_at, lots_close_at: lot.auction_lots_close_at });
+  return (
+    <section className="auction-box">
+      <h3>Auction</h3>
+      <div className="tags">
+        {unreserved && <span className="tag">Unreserved</span>}
+        {reason && <span className="tag reason">{reason}</span>}
+      </div>
+      <p className="auction-box-title">{headline}</p>
+      <dl className="meta-list wide">
+        <dt>Pick up</dt><dd>{[lot.auction_address, location ?? lot.auction_city].filter(Boolean).join(", ") || "Not listed"}</dd>
+        {closes && <><dt>{lot.status === "closed" ? "Closed" : "Lots close"}</dt><dd>{closes}</dd></>}
+        <dt>Fees</dt><dd>{lot.premium_rate}% buyer's premium + {lot.gst_rate}% GST{lot.gst_assumed ? " (assumed)" : ""}</dd>
+        {terms?.payment_due && <><dt>Pay by</dt><dd>{payBy(terms.payment_due)}</dd></>}
+        {lot.auction_instructions && <><dt>Seller</dt><dd>{lot.auction_instructions}</dd></>}
+      </dl>
+      <div className="auction-actions">
+        <button className="ghost" onClick={onOpen}>All lots in this auction</button>
+        {lot.auction_url && <a className="ghost" href={lot.auction_url} target="_blank" rel="noreferrer">Auction on number8.bid ↗</a>}
+      </div>
+    </section>
+  );
+}
+
+/** Links to search other sites for a guide price. BidScout opens them; it doesn't read them. */
+function PriceLookup({ lot }: { lot: LotDetail["lot"] }) {
+  const [q, setQ] = useState(() => lookupQuery(lot));
+  useEffect(() => setQ(lookupQuery(lot)), [lot.id]);
+  const e = encodeURIComponent(q.trim());
+  const sites: Array<[string, string, string]> = [
+    ["Trade Me", `https://www.trademe.co.nz/a/search?search_string=${e}`, "Listings on now"],
+    ["eBay sold", `https://www.ebay.com/sch/i.html?_nkw=${e}&LH_Sold=1&LH_Complete=1`, "What it sold for"],
+    ["PriceSpy", `https://pricespy.co.nz/search?search=${e}`, "New price in NZ"],
+    ["Google", `https://www.google.com/search?q=${e}`, "Specs and SKU"],
+  ];
+  return (
+    <section className="lookup">
+      <h3>Check prices elsewhere</h3>
+      <input value={q} onChange={(ev) => setQ(ev.target.value)} aria-label="Search for" spellCheck={false} />
+      <div className="lookup-links">
+        {sites.map(([name, href, hint]) => (
+          <a key={name} href={href} target="_blank" rel="noreferrer" className={!q.trim() ? "disabled" : ""}>
+            <b>{name} ↗</b><span>{hint}</span>
+          </a>
+        ))}
+      </div>
+    </section>
   );
 }

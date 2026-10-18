@@ -6,11 +6,13 @@ import { cleanText, CLEAN_VERSION } from "../shared/clean.ts";
 import { resolvePath } from "../shared/cite.ts";
 import { PARSER_VERSION } from "../shared/specs/computer.ts";
 import {
-  bootstrapAdmin, createSession, endSession, hashPassword, LoginLimiter, passwordProblem, readCookie,
+  bootstrapAdmin, createSession, endOtherSessions, endSession, hashPassword, LoginLimiter, passwordProblem, readCookie,
   SESSION_COOKIE, sessionCookie, userFromToken, usernameProblem, verifyPassword, type SessionUser,
 } from "./auth.ts";
 import { isLoopback } from "./config.ts";
 import { appContext } from "./context.ts";
+import { MIN_PHOTO_CONFIDENCE, OCR_VERSION } from "../shared/specs/photo.ts";
+import { getAuction, listAuctions } from "./auctions.ts";
 import { refreshLot } from "./scan/refresh.ts";
 import { startRun, type RunKind, type RunOptions } from "./scan/runner.ts";
 import { getScanSettings, LIVE_HOURS, saveScanSettings } from "./settings.ts";
@@ -71,7 +73,9 @@ app.post<{ Body: { username?: string; password?: string } }>("/api/auth/login", 
     limiter.fail(...keys);
     return reply.code(401).send({ error: "Wrong username or password" });
   }
-  limiter.clear(...keys);
+  // Only this username's failures are forgiven; the address keeps its count.
+  limiter.clear(keys[0]!);
+  await db.query(`UPDATE users SET last_login_at=now() WHERE id=$1`, [u.id]);
   const token = await createSession(db, Number(u.id));
   reply.header("Set-Cookie", sessionCookie(token, req.protocol === "https"));
   return { ok: true };
@@ -92,18 +96,33 @@ app.put<{ Body: { display_name?: string; email?: string | null; n8_username?: st
   "/api/me",
   async (req, reply) => {
     const b = req.body ?? {};
-    const cur = (await db.query(`SELECT password_hash FROM users WHERE id=$1`, [uid(req)])).rows[0];
+    const cur = (await db.query(`SELECT password_hash, email, n8_username, n8_bidder_number FROM users WHERE id=$1`, [uid(req)])).rows[0];
+    // Fields left out of the request keep their value.
+    const clean = (v: unknown, max: number, keep: string | null = null) =>
+      v === undefined ? keep : typeof v === "string" ? v.trim().slice(0, max) || null : null;
+    // A number8 username or bidder number can belong to one member only, or bids would be misattributed.
+    const n8User = clean(b.n8_username, 80, cur.n8_username);
+    const n8Number = clean(b.n8_bidder_number, 40, cur.n8_bidder_number);
+    const ids = [n8User, n8Number].filter((v): v is string => !!v).map((v) => v.toLowerCase());
+    if (ids.length) {
+      const clash = await db.query(
+        `SELECT display_name FROM users WHERE id <> $1 AND (lower(n8_username) = ANY($2) OR lower(n8_bidder_number) = ANY($2)) LIMIT 1`,
+        [uid(req), ids],
+      );
+      if (clash.rowCount) return reply.code(400).send({ error: `${clash.rows[0].display_name} already uses that number8 username or bidder number` });
+    }
     if (b.new_password !== undefined) {
       const problem = passwordProblem(b.new_password);
       if (problem) return reply.code(400).send({ error: problem });
       if (!(await verifyPassword(String(b.current_password ?? ""), cur.password_hash)))
         return reply.code(400).send({ error: "Your current password is wrong" });
       await db.query(`UPDATE users SET password_hash=$2, updated_at=now() WHERE id=$1`, [uid(req), await hashPassword(b.new_password)]);
+      // Sign out everywhere else; this session stays.
+      await endOtherSessions(db, uid(req), readCookie(req.headers.cookie, SESSION_COOKIE));
     }
-    const clean = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) || null : null);
     await db.query(
       `UPDATE users SET display_name=COALESCE($2, display_name), email=$3, n8_username=$4, n8_bidder_number=$5, updated_at=now() WHERE id=$1`,
-      [uid(req), clean(b.display_name, 60), clean(b.email, 200), clean(b.n8_username, 80), clean(b.n8_bidder_number, 40)],
+      [uid(req), clean(b.display_name, 60), clean(b.email, 200, cur.email), n8User, n8Number],
     );
     return (await db.query(`SELECT ${ME_COLUMNS} FROM users WHERE id=$1`, [uid(req)])).rows[0];
   },
@@ -114,7 +133,7 @@ app.put<{ Body: { display_name?: string; email?: string | null; n8_username?: st
 app.get("/api/admin/users", { preHandler: requireAdmin }, async () => ({
   users: (await db.query(
     `SELECT id, username, display_name, is_admin, disabled, email, n8_username, n8_bidder_number, created_at,
-            (SELECT max(created_at) FROM sessions s WHERE s.user_id=u.id) AS last_sign_in
+            COALESCE(last_login_at, (SELECT max(created_at) FROM sessions s WHERE s.user_id=u.id)) AS last_sign_in
      FROM users u ORDER BY lower(username)`,
   )).rows,
 }));
@@ -183,19 +202,29 @@ const snapshotMeta = (m: Record<string, unknown>) => ({
   redactions: m.redactions,
 });
 
+app.get<{ Querystring: { scope?: string } }>("/api/auctions", async (req) => ({
+  auctions: await listAuctions(db, uid(req), req.query.scope === "closed" ? "closed" : "live"),
+}));
+
+app.get<{ Params: { id: string } }>("/api/auctions/:id", async (req, reply) => {
+  const a = await getAuction(db, uid(req), Number(req.params.id));
+  return a ?? reply.code(404).send({ error: "No such auction" });
+});
+
 app.get("/api/lots", async (req) => searchLots(db, parseQuery(req.query as Record<string, unknown>), uid(req)));
 
 app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
   const id = Number(req.params.id);
   const r = await db.query(
     `SELECT ${LOT_COLUMNS}, l.description, l.images, l.bid_history, l.current_revision_id, l.machine_key, l.loose_key,
-            l.detail_read_at, l.outcome_snapshot_id, l.outcome_path, a.url AS auction_url, a.city AS auction_city
+            l.detail_read_at, l.outcome_snapshot_id, l.outcome_path, l.score_key, a.url AS auction_url, a.city AS auction_city,
+            a.address AS auction_address, a.lots_close_at AS auction_lots_close_at, a.instructions AS auction_instructions
      FROM lots l ${LOT_JOINS} WHERE l.id=$2`,
     [uid(req), id],
   );
   const lot = r.rows[0];
   if (!lot) return reply.code(404).send({ error: "No such lot" });
-  const [specs, obs, terms, revs, watchers, friendBids] = await Promise.all([
+  const [specs, obs, terms, revs, watchers, friendBids, photoValues] = await Promise.all([
     db.query(
       `SELECT id, field, value, num, source, start_offset, end_offset, quote, method FROM spec_values
        WHERE lot_revision_id=$1 AND parser_version=$2 ORDER BY id`,
@@ -217,24 +246,31 @@ app.get<{ Params: { id: string } }>("/api/lots/:id", async (req, reply) => {
        JOIN users u ON u.id=fb.user_id WHERE fb.lot_id=$1 ORDER BY COALESCE(fb.bid_at, fb.seen_at) DESC LIMIT 30`,
       [id],
     ),
+    db.query(
+      `SELECT pv.id, pv.field, pv.value, pv.quote, pv.confidence, pr.image_url FROM photo_values pv
+       JOIN photo_reads pr ON pr.id = pv.photo_read_id
+       WHERE pv.lot_id=$1 AND pr.ocr_version=$2 AND pv.confidence >= $3 ORDER BY pv.confidence DESC`,
+      [id, OCR_VERSION, MIN_PHOTO_CONFIDENCE],
+    ),
   ]);
   const suffix = lot.major_fault ? "|fault" : "";
-  const compKey = lot.comp_kind === "similar" ? lot.loose_key : lot.machine_key;
+  const compKey = lot.comp_kind === "similar" ? lot.loose_key : lot.comp_kind === "spec" ? lot.score_key : lot.machine_key;
+  const compCol = lot.comp_kind === "similar" ? "l.loose_key" : lot.comp_kind === "spec" ? "l.score_key" : "l.machine_key";
   const comps = compKey
     ? await db.query(
-        `SELECT l.id, l.title, l.final_bid, l.closed_at, l.buyer_premium, l.faults, l.ram_gb, l.storage_gb, l.cpu, l.item_url,
+        `SELECT l.id, l.title, l.final_bid, l.closed_at, l.buyer_premium, l.faults, l.ram_gb, l.storage_gb, l.cpu, l.item_url, l.thumb_url, l.bid_count,
                 l.outcome_snapshot_id, l.outcome_path, a.title AS auction_title,
                 l.final_bid * (1 + COALESCE(l.buyer_premium,0)/100.0) * 1.15 AS all_in
          FROM lots l JOIN auctions a ON a.id=l.auction_id
          WHERE l.status='closed' AND l.final_bid > 0 AND l.id <> $1
-           AND ${lot.comp_kind === "similar" ? "l.loose_key" : "l.machine_key"} = $2 AND l.major_fault = $3
+           AND ${compCol} = $2 AND l.major_fault = $3
          ORDER BY l.closed_at DESC NULLS LAST LIMIT 20`,
         [id, compKey, !!suffix],
       )
     : { rows: [] };
   return {
     lot, specs: specs.rows, observations: obs.rows, terms: terms.rows[0] ?? null, revisions: revs.rows, comps: comps.rows,
-    watchers: watchers.rows, friendBids: friendBids.rows,
+    watchers: watchers.rows, friendBids: friendBids.rows, photoValues: photoValues.rows,
   };
 });
 
@@ -266,6 +302,30 @@ app.get<{ Params: { id: string } }>("/api/cite/:id", async (req, reply) => {
     lotUrl: v.item_url,
     snapshot: snapshotMeta(meta),
   };
+});
+
+/** A spec value read from a lot photo: the stored photo, the OCR words it came from, and their boxes. */
+app.get<{ Params: { id: string } }>("/api/photo-values/:id", async (req, reply) => {
+  const r = await db.query(
+    `SELECT pv.*, pr.id AS read_id, pr.image_url, pr.image_sha256, pr.width, pr.height, pr.ocr_version, pr.created_at AS read_at, l.item_url
+     FROM photo_values pv JOIN photo_reads pr ON pr.id = pv.photo_read_id JOIN lots l ON l.id = pv.lot_id WHERE pv.id=$1`,
+    [Number(req.params.id)],
+  );
+  const v = r.rows[0];
+  if (!v) return reply.code(404).send({ error: "No such photo value" });
+  return {
+    kind: "photo", field: v.field, value: v.value, quote: v.quote, confidence: Number(v.confidence), boxes: v.boxes,
+    width: v.width, height: v.height, image: `/api/photos/${v.read_id}/image`, imageUrl: v.image_url, sha256: v.image_sha256,
+    ocr: v.ocr_version, readAt: v.read_at, lotUrl: v.item_url,
+  };
+});
+
+/** The stored copy of a lot photo (re-hashed on read). */
+app.get<{ Params: { id: string } }>("/api/photos/:id/image", async (req, reply) => {
+  const r = await db.query(`SELECT image_sha256, content_type FROM photo_reads WHERE id=$1`, [Number(req.params.id)]);
+  if (!r.rows[0]) return reply.code(404).send({ error: "No such photo" });
+  reply.header("Cache-Control", "private, max-age=86400").type(r.rows[0].content_type);
+  return store.get(r.rows[0].image_sha256);
 });
 
 /** A raw field from a stored response (a bid, a close time, a final bid). */
@@ -344,7 +404,7 @@ app.delete<{ Params: { id: string } }>("/api/favourites/:id", async (req) => {
 app.post<{ Params: { id: string } }>("/api/lots/:id/refresh", async (req, reply) => {
   const abort = new AbortController();
   try {
-    await refreshLot(db, store, ctx.makeTransport(abort.signal, 1), Number(req.params.id));
+    await refreshLot(db, store, ctx.makeTransport(abort.signal), Number(req.params.id));
     return { ok: true };
   } catch (e) {
     return reply.code(502).send({ error: `Could not refresh: ${(e as Error).message}` });

@@ -312,3 +312,70 @@ CREATE INDEX IF NOT EXISTS lots_open_it ON lots (ends_at) WHERE status = 'open' 
 CREATE INDEX IF NOT EXISTS lots_category ON lots (category);
 CREATE INDEX IF NOT EXISTS lots_device_type ON lots (device_type) WHERE device_type IS NOT NULL;
 CREATE INDEX IF NOT EXISTS lots_closed_at ON lots (closed_at DESC) WHERE status = 'closed';
+
+-- 18 Oct 2026 (phase 2): spec score, expected final, specs read from photos.
+ALTER TABLE lots ADD COLUMN IF NOT EXISTS spec_score numeric;
+ALTER TABLE lots ADD COLUMN IF NOT EXISTS score_key text;
+ALTER TABLE lots ADD COLUMN IF NOT EXISTS score_parts jsonb;
+ALTER TABLE lots ADD COLUMN IF NOT EXISTS score_incomplete boolean NOT NULL DEFAULT false;
+ALTER TABLE lots ADD COLUMN IF NOT EXISTS photo_fields text[] NOT NULL DEFAULT '{}';
+ALTER TABLE lots ADD COLUMN IF NOT EXISTS photo_ocr_at timestamptz;
+CREATE INDEX IF NOT EXISTS lots_score_key ON lots (score_key) WHERE status = 'closed';
+
+-- Text read from a lot photo by OCR. The photo itself is stored (object store, SHA-256).
+CREATE TABLE IF NOT EXISTS photo_reads (
+  id bigserial PRIMARY KEY,
+  -- No foreign key to lots: photo reads survive a replay, which rebuilds lots from snapshots.
+  lot_id int NOT NULL,
+  image_url text NOT NULL,
+  image_sha256 text NOT NULL,
+  content_type text NOT NULL,
+  width int,
+  height int,
+  ocr_version text NOT NULL,
+  text text NOT NULL,
+  words jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (lot_id, image_url, ocr_version)
+);
+DROP TRIGGER IF EXISTS photo_reads_immutable ON photo_reads;
+CREATE TRIGGER photo_reads_immutable BEFORE UPDATE ON photo_reads
+  FOR EACH ROW EXECUTE FUNCTION bidscout_immutable();
+
+-- A spec value found in a photo's text, with the word boxes it came from.
+CREATE TABLE IF NOT EXISTS photo_values (
+  id bigserial PRIMARY KEY,
+  photo_read_id bigint NOT NULL REFERENCES photo_reads(id),
+  lot_id int NOT NULL,
+  field text NOT NULL,
+  value text NOT NULL,
+  num numeric,
+  quote text NOT NULL,
+  boxes jsonb NOT NULL,
+  confidence numeric NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS photo_values_lot ON photo_values (lot_id);
+ALTER TABLE photo_reads DROP CONSTRAINT IF EXISTS photo_reads_lot_id_fkey;
+ALTER TABLE photo_values DROP CONSTRAINT IF EXISTS photo_values_lot_id_fkey;
+DROP TRIGGER IF EXISTS photo_values_immutable ON photo_values;
+CREATE TRIGGER photo_values_immutable BEFORE UPDATE ON photo_values
+  FOR EACH ROW EXECUTE FUNCTION bidscout_immutable();
+
+ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS photos_read int NOT NULL DEFAULT 0;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at timestamptz;
+
+-- Auction details shown on the Auctions page (from the auction list response).
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS address text;
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS postcode text;
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS instructions text;
+ALTER TABLE auctions ADD COLUMN IF NOT EXISTS lots_close_at timestamptz;
+-- Titles stored before double-escaped entities were decoded.
+UPDATE auctions SET title = replace(replace(replace(title, '&#38;', '&'), '&#39;', ''''), '&amp;', '&') WHERE title ~ '&(#38|#39|amp);';
+
+-- Which OCR version last read a lot's photos; a new version queues them again.
+ALTER TABLE lots ADD COLUMN IF NOT EXISTS photo_ocr_version text;
+UPDATE lots l SET photo_ocr_version = r.v
+  FROM (SELECT DISTINCT ON (lot_id) lot_id, ocr_version AS v FROM photo_reads ORDER BY lot_id, id DESC) r
+  WHERE r.lot_id = l.id AND l.photo_ocr_version IS NULL;

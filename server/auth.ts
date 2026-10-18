@@ -50,6 +50,11 @@ export async function endSession(db: Db, token: string) {
   await db.query(`DELETE FROM sessions WHERE token_hash=$1`, [tokenHash(token)]);
 }
 
+/** Ends every session of a user except the one with `keepToken` (if given). */
+export async function endOtherSessions(db: Db, userId: number, keepToken?: string) {
+  await db.query(`DELETE FROM sessions WHERE user_id=$1 AND token_hash <> $2`, [userId, keepToken ? tokenHash(keepToken) : ""]);
+}
+
 export interface SessionUser {
   id: number;
   username: string;

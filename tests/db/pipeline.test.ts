@@ -28,6 +28,8 @@ function site() {
     lot2Desc: "Type &#8211; AIO Make &#8211; HP Model &#8211; EliteOne 800 G6 Specs &#8211; Intel Core i5 10500,3.1GHz,8GB,1TB SSD ,27 inch Faults &#8211; ITAD Comments &#8211; -",
     lot1Bid: "10.00",
     lot1Ends: inDays(2),
+    /** The high bidder the lot page shows (raw, before redaction). */
+    itemHigh: "someone",
     calls: [] as string[],
   };
   const lots = () => ({
@@ -58,18 +60,20 @@ function site() {
       current = { path: p, form: new URLSearchParams(Object.entries(form).map(([k, v]) => [k, String(v)])).toString() };
       if (p === "/api/auctions")
         return respond({ total: 2, page: 1, total_pages: 1, data: [
-          { id: "90", title: "Unreserved IT Equipment Liquidation - Rosedale", ends: inDays(2).toISOString().slice(0, 19) + "+1300", starts: inDays(-5).toISOString().slice(0, 19) + "+1300", city: "Rosedale", item_count: "2" },
+          { id: "90", title: "Unreserved IT &#38;#38; Equipment Liquidation - Rosedale", ends: inDays(2).toISOString().slice(0, 19) + "+1300", starts: inDays(-5).toISOString().slice(0, 19) + "+1300", city: "Rosedale", item_count: "2",
+            address: "Unit 4, 11 Orbit Drive", zip: "0632", last_item_closes: inDays(2.02).toISOString().slice(0, 19) + "+1300",
+            intro: "<p>Under Instructions from The Liquidators of Example Ltd (In Liquidation)</p><p>Contact staff@example.test with any questions.</p>" },
           { id: "10", title: "Closed - Old Sale", ends: inDays(-400).toISOString().slice(0, 19) + "+1300", city: "Drury", item_count: "5" },
         ] });
       if (p === "/api/getitems" && form.item_type === "itemlist") return respond(lots());
       if (p === "/api/getitems" && form.item_type === "pastsales")
-        return respond({ total: 1, page: 1, total_pages: 1, items: [
-          { id: "400", auction_id: "80", auction_title: "Closed - Earlier IT Sale", lot_number: "0007", title: "Lenovo ThinkPad T14 Gen 2 - Laptop",
+        return respond({ total: 3, page: 1, total_pages: 1, items: [300, 320, 340].map((bid, k) => (
+          { id: String(400 + k), auction_id: "80", auction_title: "Closed - Earlier IT Sale", lot_number: `000${7 + k}`, title: "Lenovo ThinkPad T14 Gen 2 - Laptop",
             description: "Type &#8211; Laptop Make &#8211; Lenovo Model &#8211; ThinkPad T14 Gen 2 Specs &#8211; Intel Core i5 1145G7,16GB,256GB SSD ,14 inch Faults &#8211; ITAD Comments &#8211; -",
-            category_name: "IT & Equipment", buyer_premium: "15.000", current_bid: "300.00", bid_count: "21", ends: unix(inDays(-30)) },
-        ] });
+            category_name: "IT & Equipment", buyer_premium: "15.000", current_bid: `${bid}.00`, bid_count: "21", ends: unix(inDays(-30 + k)) })) });
       if (p === "/api/ItemData")
         return respond({ id: String(form.item_id), auction_id: "90",
+          ...(String(form.item_id) === "501" ? { current_bid: state.lot1Bid, bid_count: "3", end_time_unix: unix(state.lot1Ends), highbidder_username: state.itemHigh } : {}),
           images: [{ image_url: "https://cdn.test/a.jpg" }, { image_url: "https://cdn.test/b.jpg" }],
           bid_history: [{ bid: "10.00", time_of_bid: "2026-10-16T03:47:43+1300", user_name: "bidder9", buyer_number: "12" }],
           payment_happens: "<p><strong>BIDS IN THIS SALE DO NOT INCLUDE GST AND HAVE A 15% + GST BUYER'S PREMIUM</strong></p><p>the buyer's premium of 15% is added ($150) and then GST of 15% ($172.50) is added. PAYMENT DUE Full payment by 12pm Friday.</p>" });
@@ -124,8 +128,40 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   assert.equal(past.final_bid, 300);
   assert.equal(past.machine_key, lot.machine_key, "same machine, same key");
   const stats = (await db.query(`SELECT n, p50 FROM comp_stats WHERE key=$1`, [lot.machine_key])).rows[0];
-  assert.equal(stats.n, 1);
-  assert.equal(Math.round(stats.p50 * 100), Math.round(300 * 1.15 * 1.15 * 100));
+  assert.equal(stats.n, 3);
+  assert.equal(Math.round(stats.p50 * 100), Math.round(320 * 1.15 * 1.15 * 100));
+
+  // Expected final and value index come back from search, never below the all-in now.
+  const { searchLots, parseQuery } = await import("../../server/search.ts");
+  const found = (await searchLots(db, parseQuery({ status: "live", sort: "value" }), alex)).items.find((x) => x.id === 501);
+  assert.equal(found.comp_kind, "machine");
+  assert.equal(Math.round(found.expected_mid), Math.round(320 * 1.3225));
+  // The range is the comps' p25–p75 (all-in 396.75, 423.20, 449.65).
+  assert.equal(Math.round(found.expected_low), Math.round(310 * 1.3225));
+  assert.equal(Math.round(found.expected_high), Math.round(330 * 1.3225));
+  assert.ok(found.spec_score > 0);
+  assert.ok(found.expected_low <= found.expected_mid && found.expected_mid <= found.expected_high);
+
+  // Auctions: details from the auction list (title decoded, no contact line), lot and favourite counts.
+  const { listAuctions, getAuction } = await import("../../server/auctions.ts");
+  const live = await listAuctions(db, alex, "live");
+  assert.deepEqual(live.map((a) => a.id), [90]);
+  const a90 = live[0];
+  assert.equal(a90.title, "Unreserved IT & Equipment Liquidation - Rosedale");
+  assert.equal(a90.address, "Unit 4, 11 Orbit Drive");
+  assert.equal(a90.postcode, "0632");
+  assert.equal(a90.instructions, "Under Instructions from The Liquidators of Example Ltd (In Liquidation)");
+  assert.equal(a90.lots, 2);
+  assert.equal(a90.it_lots, 2);
+  assert.equal(a90.bids, 3);
+  assert.ok(a90.lots_close_at > a90.ends_at);
+  const closedAuctions = await listAuctions(db, alex, "closed");
+  const a80 = closedAuctions.find((a) => a.id === 80);
+  assert.ok(a80, "an auction known only from past sales is listed as closed");
+  assert.equal(a80.sold, 3);
+  assert.equal(Number(a80.sold_total), 960);
+  assert.equal((await getAuction(db, alex, 90))?.lots, 2);
+  assert.equal(await getAuction(db, alex, 12345), null);
 
   const terms = (await db.query(`SELECT premium_rate, gst_rate, premium_quote FROM auction_terms WHERE auction_id=90`)).rows[0];
   assert.equal(terms.premium_rate, 15);
@@ -154,12 +190,24 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   await startRun(db, "live");
   await workOneRun(deps);
   const revs = (await db.query(`SELECT lot_id, count(*)::int AS n FROM lot_revisions GROUP BY lot_id ORDER BY lot_id`)).rows;
-  assert.deepEqual(revs, [{ lot_id: 400, n: 1 }, { lot_id: 501, n: 1 }, { lot_id: 502, n: 2 }]);
+  assert.deepEqual(revs, [{ lot_id: 400, n: 1 }, { lot_id: 401, n: 1 }, { lot_id: 402, n: 1 }, { lot_id: 501, n: 1 }, { lot_id: 502, n: 2 }]);
   const obs = (await db.query(`SELECT current_bid FROM lot_observations WHERE lot_id=501 ORDER BY id`)).rows.map((r) => r.current_bid);
   assert.deepEqual(obs, [10, 45]);
   assert.equal((await db.query(`SELECT ram_gb FROM lots WHERE id=502`)).rows[0].ram_gb, 16);
   const third = (await db.query(`SELECT details_read FROM scan_runs ORDER BY id DESC LIMIT 1`)).rows[0];
   assert.equal(third.details_read, 1, "only the changed lot's page is re-read");
+
+  // Refresh now: an outsider has overtaken Alex. One request; the bid moves and Alex is no longer shown as high bidder.
+  const { refreshLot } = await import("../../server/scan/refresh.ts");
+  state.lot1Bid = "60.00";
+  state.itemHigh = "outsider";
+  const beforeRefresh = transport.stats.requests;
+  await refreshLot(db, store, transport, 501, new Date(clock.getTime() + 600_000));
+  assert.equal(transport.stats.requests, beforeRefresh + 1);
+  const refreshed = (await db.query(`SELECT current_bid, friend_high_user_id FROM lots WHERE id=501`)).rows[0];
+  assert.equal(Number(refreshed.current_bid), 60);
+  assert.equal(refreshed.friend_high_user_id, null, "the marker is cleared when a friend is no longer high bidder");
+  state.itemHigh = "someone";
 
   // After close, the final bid is recorded from the snapshot that showed it closed.
   clock = inDays(3);
@@ -167,19 +215,82 @@ test("live and history scans store cited, redacted, versioned lots", async () =>
   await workOneRun(deps);
   const closed = (await db.query(`SELECT status, final_bid, outcome_snapshot_id FROM lots WHERE id=501`)).rows[0];
   assert.equal(closed.status, "closed");
-  assert.equal(closed.final_bid, 45);
+  assert.equal(closed.final_bid, 60);
   assert.ok(closed.outcome_snapshot_id);
 
   // Replaying the stored responses rebuilds the same state without any requests.
   const snapshotOf = async () => (await db.query(
-    `SELECT id, status, final_bid, ends_at, machine_key, ram_gb, faults, current_revision_id IS NOT NULL AS has_rev FROM lots ORDER BY id`)).rows;
+    `SELECT id, status, current_bid, final_bid, ends_at, machine_key, ram_gb, faults, friend_high_user_id,
+            current_revision_id IS NOT NULL AS has_rev FROM lots ORDER BY id`)).rows;
   const before = await snapshotOf();
+  assert.equal(before.find((l) => l.id === 501).friend_high_user_id, alex);
   const obsBefore = (await db.query(`SELECT count(*)::int AS n FROM lot_observations`)).rows[0].n;
   const requestsBefore = transport.stats.requests;
   await replayAll(db, store);
   assert.deepEqual(await snapshotOf(), before);
   assert.equal((await db.query(`SELECT count(*)::int AS n FROM lot_observations`)).rows[0].n, obsBefore);
   assert.equal(transport.stats.requests, requestsBefore, "replay makes no requests");
+
+  // Photos fill specs the listing left out, with the words they came from; the listing's own values stay.
+  await db.query(`UPDATE lots SET ram_gb=NULL, storage_gb=NULL, images='["https://cdn.test/p1.jpg"]', photo_ocr_at=NULL, status='open' WHERE id=502`);
+  const { readLotPhotos, lotsNeedingPhotos } = await import("../../server/scan/photos.ts");
+  assert.ok((await lotsNeedingPhotos(db, 10)).includes(502));
+  const fakeImages = { get: async (u: string) => ({ body: Buffer.from(`photo of ${u}`), contentType: "image/jpeg" }) };
+  const line = "Memory Size 32768 MB Storage 1TB SSD";
+  let pos = 0;
+  const words = line.split(" ").map((t) => {
+    const w = { text: t, conf: 88, left: pos * 4, top: 10, width: t.length * 4, height: 10, start: pos, end: pos + t.length };
+    pos += t.length + 1;
+    return w;
+  });
+  const read = await readLotPhotos(db, store, fakeImages, 502, 3, clock, async () => ({ text: line, words, width: 400, height: 300 }));
+  assert.equal(read, 1);
+  const lp = (await db.query(`SELECT ram_gb, storage_gb, storage_type, photo_fields, photo_ocr_at FROM lots WHERE id=502`)).rows[0];
+  assert.equal(lp.ram_gb, 32);
+  assert.equal(lp.storage_gb, 1000);
+  assert.deepEqual(lp.photo_fields.sort(), ["ramGb", "storage"]);
+  assert.ok(lp.photo_ocr_at);
+  const pv = (await db.query(`SELECT field, quote, boxes FROM photo_values WHERE lot_id=502 ORDER BY field`)).rows;
+  assert.deepEqual(pv.map((r) => [r.field, r.quote]), [["ramGb", "Memory Size 32768 MB"], ["storage", "1TB SSD"]]);
+  assert.ok(pv[0].boxes.length >= 3);
+  assert.ok(!(await lotsNeedingPhotos(db, 10)).includes(502), "read once");
+  await db.query(`UPDATE lots SET photo_ocr_version='old-ocr' WHERE id=502`);
+  assert.ok((await lotsNeedingPhotos(db, 10)).includes(502), "specs that came from photos are read again by a new OCR version");
+  await db.query(`UPDATE lots SET photo_ocr_version=$1 WHERE id=502`, [(await import("../../shared/specs/photo.ts")).OCR_VERSION]);
+  await assert.rejects(db.query(`UPDATE photo_values SET quote='x'`), /immutable/);
+  // A replay keeps what was read from photos and doesn't queue the lot again.
+  await replayAll(db, store);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM photo_values WHERE lot_id=502`)).rows[0].n, 2);
+  assert.ok((await db.query(`SELECT photo_ocr_at FROM lots WHERE id=502`)).rows[0].photo_ocr_at);
+  assert.ok(!(await lotsNeedingPhotos(db, 10)).includes(502));
+
+  // A new OCR version queues the lot again; old-version values no longer count.
+  await db.query(`UPDATE lots SET photo_ocr_version='old-ocr', status='open', ram_gb=NULL WHERE id=502`);
+  assert.ok((await lotsNeedingPhotos(db, 10)).includes(502));
+  await db.query(`UPDATE lots SET images='["https://cdn.test/p2.jpg","https://cdn.test/p3.jpg","https://cdn.test/p4.jpg"]' WHERE id=502`);
+  const photosBefore = (await db.query(`SELECT count(*)::int AS n FROM photo_reads`)).rows[0].n;
+  // Photo 2 can't be fetched for now, photo 3 is corrupt, photo 4 shows a phone number.
+  const flaky = { get: async (u: string) => { if (u.endsWith("p2.jpg")) throw new Error("fetch failed"); return { body: Buffer.from(u), contentType: "image/jpeg" }; } };
+  const ocr = async (img: Buffer) => {
+    if (img.toString().endsWith("p3.jpg")) throw new Error("Input buffer contains unsupported image format");
+    return { text: "Call 021 234 5678 Memory Size 32768 MB", words, width: 400, height: 300 };
+  };
+  assert.equal(await readLotPhotos(db, store, flaky, 502, 3, clock, ocr), 0, "a bad photo doesn't stop the run");
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM photo_reads`)).rows[0].n, photosBefore, "the photo with contact details is not stored");
+  assert.ok((await lotsNeedingPhotos(db, 10)).includes(502), "photo 2 may work next time, so the lot stays queued");
+  const permanent = { get: async () => { throw new Error("HTTP 404 for x"); } };
+  await readLotPhotos(db, store, permanent, 502, 3, clock, ocr);
+  assert.ok(!(await lotsNeedingPhotos(db, 10)).includes(502), "photos that are gone don't keep the lot queued");
+
+  // After an upgrade that changes the parser, the worker re-parses stored listings (no requests).
+  const { reparseStale } = await import("../../server/scan/reparse.ts");
+  await db.query(`UPDATE lots SET parser_version='specs-old' WHERE id IN (501, 502)`);
+  const requestsBeforeReparse = transport.stats.requests;
+  assert.equal(await reparseStale(db), 2);
+  assert.equal(await reparseStale(db), 0);
+  assert.equal(transport.stats.requests, requestsBeforeReparse);
+  const { PARSER_VERSION } = await import("../../shared/specs/computer.ts");
+  assert.deepEqual((await db.query(`SELECT DISTINCT parser_version FROM lots`)).rows.map((r) => r.parser_version), [PARSER_VERSION]);
 
   // Evidence rows cannot be edited.
   await assert.rejects(db.query(`UPDATE spec_values SET quote='x'`), /immutable/);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type ScanRun } from "./api.ts";
+import { account, api, type ScanRun, type ScanSettings } from "./api.ts";
 import { useNow } from "./Feed.tsx";
 import { nzDate } from "./format.ts";
 
@@ -13,6 +13,10 @@ export function Scans({ scan }: { scan: { run: ScanRun | null; active: boolean; 
   const [maxPages, setMaxPages] = useState("200");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [settings, setSettings] = useState<ScanSettings | null>(null);
+  useEffect(() => {
+    account.settings().then((r) => setSettings(r.scan)).catch(() => {});
+  }, []);
   useEffect(() => {
     api.scans().then((r) => setRuns(r.runs)).catch(() => {});
   }, [scan.run?.state, scan.run?.pages_read, scan.run?.details_read]);
@@ -38,7 +42,12 @@ export function Scans({ scan }: { scan: { run: ScanRun | null; active: boolean; 
       <div className="scan-head">
         <div>
           <h1>Scans</h1>
-          <p className="sub">Scans only run when you start them. One at a time, at least 1.2 s between requests, slowing down when number8.bid is slow, and stopping if it asks.</p>
+          <p className="sub">
+            {settings?.scheduleEnabled
+              ? `Live auctions are scanned every ${settings.liveEveryHours} hour${settings.liveEveryHours === 1 ? "" : "s"}${settings.historyWeekly ? ", plus a weekly past-sales top-up" : ""}, and whenever you start one. `
+              : "Scans only run when you start them (schedule off in Settings). "}
+            One scan at a time, at most {settings?.concurrency ?? 1} request{(settings?.concurrency ?? 1) === 1 ? "" : "s"} at once with starts at least {(settings?.concurrency ?? 1) > 1 ? "0.3" : "1.2"} s apart, dropping to one at a time when number8.bid is slow, and stopping if it asks.
+          </p>
         </div>
       </div>
 
@@ -68,25 +77,27 @@ export function Scans({ scan }: { scan: { run: ScanRun | null; active: boolean; 
       {msg && <p className="err">{msg}</p>}
 
       <h2 className="h2">Recent scans</h2>
-      <table className="runs">
+      <div className="table-wrap">
+      <table className="table">
         <thead><tr><th>#</th><th>Kind</th><th>Started</th><th>Result</th><th className="r">Requests</th><th className="r">Lots</th><th className="r">New</th><th className="r">Changed</th><th className="r">Closed</th><th>Note</th></tr></thead>
         <tbody>
           {runs.map((r) => (
             <tr key={r.id}>
-              <td>{r.id}</td>
-              <td>{r.kind === "live" ? "Live" : "Past sales"}</td>
-              <td>{nzDate(r.started_at ?? r.created_at)}</td>
+              <td className="muted num">{r.id}</td>
+              <td className="nowrap"><b>{r.kind === "live" ? "Live" : "Past sales"}</b>{r.trigger === "schedule" ? <div className="muted small">scheduled</div> : null}</td>
+              <td className="nowrap">{nzDate(r.started_at ?? r.created_at)}</td>
               <td><span className={`state ${r.state}`}>{r.state}</span></td>
-              <td className="r">{r.requests}{r.retries ? <small className="muted"> ({r.retries} retried)</small> : null}</td>
-              <td className="r">{r.lots_seen.toLocaleString()}</td>
-              <td className="r">{r.lots_new.toLocaleString()}</td>
-              <td className="r">{r.lots_changed.toLocaleString()}</td>
-              <td className="r">{r.lots_closed.toLocaleString()}</td>
-              <td className="small">{r.stop_reason ?? r.last_error ?? ""}</td>
+              <td className="r num">{r.requests}{r.retries ? <small className="muted"> ({r.retries} retried)</small> : null}</td>
+              <td className="r num">{r.lots_seen.toLocaleString()}</td>
+              <td className="r num">{r.lots_new.toLocaleString()}</td>
+              <td className="r num">{r.lots_changed.toLocaleString()}</td>
+              <td className="r num">{r.lots_closed.toLocaleString()}</td>
+              <td className="small muted">{r.stop_reason ?? r.last_error ?? ""}</td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

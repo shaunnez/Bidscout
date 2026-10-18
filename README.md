@@ -6,9 +6,14 @@ Personal use, with permission from number 8 solutions (17 October 2026).
 
 ## What it does
 
-- **Live deals:** every open lot, filterable by type (laptop, all-in-one, mini PC, workstation, server, tablet, monitor…), make, processor, Intel generation, RAM, storage, SSD, condition (no faults / no major faults), all-in price and closing time. Rows show the all-in price now (bid + buyer's premium + GST), bid count, a ticking time left, fault badges, and past final prices for the same or similar machine.
+- **Live deals:** every open lot in every category, closing soonest first (switch to Computers & IT for computer filters), filterable by type (laptop, all-in-one, mini PC, workstation, server, tablet, monitor…), make, processor, Intel generation, RAM, storage, SSD, condition (no faults / no major faults), all-in price and closing time. Rows show the all-in price now (bid + buyer's premium + GST), bid count, a ticking time left, fault badges, the spec score, the expected final and a value index. Sort by best value, lowest expected final or highest spec score.
+- **Expected final:** the likely all-in final price, from past sales of the same machine, then similar machines, then machines with a similar spec score. Shown as the middle half of those sales (p25–p75), never below the all-in at the current bid.
+- **Value index:** how much computer you get for the money. 100 × the typical final for machines with this spec score ÷ this lot's expected final. Over 100 is cheaper than typical for what it is. Hidden when the expected final itself came from the spec-score sales, since it would just read 100.
+- **Specs from photos:** for open computer lots missing a CPU model, RAM or storage, the first 3 photos are read with OCR (spec stickers, BIOS and "About" screens). A value found there fills only specs the listing didn't state, and opens the photo with the words boxed.
 - **Past sales:** closed lots with their final bids, the history the comparisons are built from.
-- **Lot drawer:** photos, a price breakdown where each part opens its source (bid, premium wording, GST wording), a details table where every value opens its quote, past sales of the same machine, bid movement seen across scans, and the listing text.
+- **Auctions:** every live auction as a card: photos, pickup address, when the first and last lots close, fees, payment deadline, who is selling (the "Under instructions from …" line), lot and bid counts, how many lots are good value, and the group's favourites. Recently closed auctions show what sold and for how much. Opening one shows its lots with the auction's details at the top.
+- **Check prices elsewhere:** each lot has links that search Trade Me, eBay sold listings, PriceSpy and Google for the same machine (make, model and CPU; a clone's parts; or the tidied title). BidScout only opens these pages for you; it never fetches or stores them.
+- **Lot drawer:** photos, a price breakdown where each part opens its source (bid, premium wording, GST wording), a link to its auction (pickup address, closing times, fees), a details table where every value opens its quote, what it's likely to cost with the spec score broken down, values read from photos, past sales of the same machine, bid movement seen across scans, and the listing text.
 - **Favourites:** each person stars their own lots; a lot shows who else in the group has favourited it.
 - **Friends:** each person adds their own number8 username and bidder number in Profile. A lot then shows when a friend is the high bidder or has bid, so you don't bid against each other. **Refresh now** on a lot re-reads it from number8.bid (one request) right before you bid.
 - **Scans:** live scans run every 4 hours (Settings; on by default when hosted), plus a weekly past-sales top-up; you can also start one by hand and watch real progress counts.
@@ -16,7 +21,7 @@ Personal use, with permission from number 8 solutions (17 October 2026).
 
 ## Running it
 
-Needs Node 22 and PostgreSQL 16.
+Needs Node 22 and PostgreSQL 16. Reading photos also needs `tesseract` (`apt install tesseract-ocr tesseract-ocr-eng`); without it the photo stage is skipped. The Docker image includes it.
 
 ```sh
 cp .env.example .env.local        # set BIDSCOUT_CONTACT to an email number 8 solutions can reach you on
@@ -34,6 +39,7 @@ npm run scan                                   # live auctions
 npm run scan -- history --max-pages 200        # past sales, 200 pages (~5 min)
 npm run scan -- history --resume               # continue where the last history scan stopped
 npm run scan -- history --category "IT & Equipment"
+npm run photos -- --limit 20                   # read photos of up to 20 lots now
 ```
 
 The first live scan takes 10–20 minutes, because it opens every lot page once. Later scans only open new or changed lots. All past sales come to roughly 2,200 pages, about 50 minutes in total; run them in chunks.
@@ -57,12 +63,14 @@ Keep `numReplicas = 1`: the worker runs inside the one instance, and only one sc
 
 - One scan at a time across the whole app (a unique index on active runs).
 - Up to 4 requests in flight (Settings → Requests at a time, 1–4), with request starts at least 0.3 s apart. One at a time means at least 1.2 s between requests plus up to 0.4 s of jitter (`BIDSCOUT_MIN_INTERVAL_MS` can raise it, never below 1 s).
-- Any slow reply (over 3 s) or 429/503 drops the scan to one request at a time for the rest of the run.
+- Every request the app makes to number8.bid shares one set of slots and spacing (`RequestGate`), so **Refresh now** during a scan takes one of the scan's slots rather than adding to them. This holds because the worker runs inside the one instance.
+- Any slow reply (over 3 s) or 429/503 drops the scan to one request at a time for the rest of the run. If one parallel request stops the run, the others are cancelled.
+- A weekly past-sales top-up reads one page at a time, so it stops at the first page with nothing new without fetching past it.
 - After a reply that took over 3 s, the next gap is twice that reply's time (capped at 30 s).
 - Past sales are read 60 to a page, the largest page the site's own menu offers. A 200-row page took 17 s for their server.
 - **Retries:**
   - Network errors, timeouts, 408, 425 and 5xx: backoff of 2 s, 4 s, 8 s and 16 s (plus jitter), at most 4 retries.
-  - 429 and 503: wait for `Retry-After` (default 60 s, at most 15 min). After 3 of these in one run, the run stops as *partial* and can be continued later.
+  - 429 and 503: nothing starts until `Retry-After` has passed (default 60 s, at most 15 min), and the retry waits for requests still in flight, then goes one at a time. After 3 of these in one run, the run stops as *partial* and can be continued later.
   - An HTML page where JSON was expected (a challenge or login page) stops the run.
 - Only public `/api/` and `/auxiliary/` paths. `/admin` and `/myaccount` (disallowed in robots.txt) are refused in code.
 - Photos load from number8's CDN in your browser when you open a lot; the scanner doesn't download them.
@@ -76,7 +84,8 @@ Keep `numReplicas = 1`: the worker runs inside the one instance, and only one sc
 - `npm run check:citations` re-checks every stored citation; the database test does the same on its fixtures.
 - `npm run replay` rebuilds every derived table from the stored responses, in fetch order, without any requests. Use it after fixing how a field is read. The database test checks that a replay reproduces the same state.
 - **Times:** AuctionMethod's unix fields (`end_time`, `ends`) hold New Zealand wall-clock time written as if it were UTC, and the auction list's ISO strings put a "+1300" label on a UTC clock. Both are converted in `server/number8.ts` (with daylight saving), checked against the site's own display text.
-- Evidence tables (`snapshots`, `lot_revisions`, `lot_observations`, `spec_values`, `auction_terms`) reject updates.
+- **Photos (`server/images.ts`, `server/ocr.ts`, `server/scan/photos.ts`):** photos come only from number8's image host, one at a time a second apart. Each is stored like a snapshot (SHA-256, gzipped), enlarged 2× and greyscaled with sharp, then read by tesseract (`--psm 11`). `photo_reads` keeps the text and every word's box; `photo_values` keeps each value with its quote, boxes and confidence. Only strict patterns count (a CPU model number, "16GB RAM", "Memory Size 8192 MB", "512GB SSD"), only at 60% confidence or more, and only for specs the listing didn't state. A replay keeps photo reads, since they come from images rather than snapshots. If you change the OCR settings, bump `OCR_VERSION`.
+- Evidence tables (`snapshots`, `lot_revisions`, `lot_observations`, `spec_values`, `auction_terms`, `photo_reads`, `photo_values`) reject updates.
 - Nothing is guessed. A value that isn't in the text is simply missing, and generations are only given for Intel Core.
 
 **Redaction (`server/redact.ts`).** Bidder usernames, buyer numbers and the high bidder, plus any email address or NZ mobile number in any text, are replaced before a response is written. Each snapshot lists the paths removed and keeps the SHA-256 of the original bytes.
@@ -88,16 +97,18 @@ Keep `numReplicas = 1`: the worker runs inside the one instance, and only one sc
 - Lots with a major fault (won't boot, locked, screen damage, unknown fault) are only compared with other faulty lots.
 - Everything else is keyed on its tidied title, since liquidation sales often repeat a stock line.
 - All-in uses each sale's premium and 15% GST, matching number8's worked example: a $1,000 bid becomes $1,322.50.
-- A comparison shows its sales in the drawer. Below 3 sales it says how many there are, rather than giving a range.
+- **Spec score (`shared/specs/score.ts`):** a rough, explainable measure of how much computer a lot is, not a benchmark: (2 × CPU points + RAM points + storage points) × condition. CPU points are the tier (i3 1 … i9 4, Ryzen alike, Apple M 3.5, Celeron 0.4) times an age factor (Intel generation, Ryzen series, M chip). RAM is log₂ of GB (capped at 6), an SSD 0.5–2.5 by size, a hard drive 0.3. A major fault multiplies by 0.35, a minor one by 0.9. The drawer shows each part. Rows with no RAM or storage stated are marked incomplete.
+- **Spec key:** form factor (portable, desktop, server), the score rounded to half a point, and fault. It's the last fallback for comparisons and the basis of the value index.
+- A comparison shows its sales in the drawer. Below 3 sales it says how many there are, rather than giving a range; the expected final needs at least 3.
 
 ## Layout
 
 ```
 server/      API (Fastify), worker, transport, store, redaction, schema.sql
-server/scan/ runner (leases, cursor, stages), ingest, comparisons
+server/scan/ runner (leases, cursor, stages), ingest, comparisons, photos
 shared/      clean text, citation helpers, parsers, payment terms
 src/         React UI (feed, lot drawer, source panel, scans)
-scripts/     scan, setup-db, reparse, replay, check-citations, test-db
+scripts/     scan, setup-db, reparse, replay, read-photos, check-citations, test-db
 tests/       unit (parsers, transport, redaction) and db (whole pipeline against a fake site)
 ```
 
@@ -105,7 +116,7 @@ tests/       unit (parsers, transport, redaction) and db (whole pipeline against
 
 ```sh
 npm run typecheck
-npm test            # parsers, transport retries and pacing, redaction
+npm test            # parsers, spec score, photo values, transport retries and pacing, redaction
 npm run test:db     # whole pipeline in a throwaway database with a fake site
 npm run check:citations
 ```
