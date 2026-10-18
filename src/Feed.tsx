@@ -100,6 +100,7 @@ export function Feed({ page, params, setParams, openLot, summary, scanFinished }
             <Select label="RAM" value={params.get("minRam")} onChange={(v) => set("minRam", v)} options={[["", "Any"], ["8", "8 GB+"], ["16", "16 GB+"], ["32", "32 GB+"], ["64", "64 GB+"]]} />
             <Select label="Storage" value={params.get("minStorage")} onChange={(v) => set("minStorage", v)} options={[["", "Any"], ["240", "240 GB+"], ["500", "500 GB+"], ["1000", "1 TB+"], ["2000", "2 TB+"]]} />
             <label className="check"><input type="checkbox" checked={params.get("ssd") === "1"} onChange={(e) => set("ssd", e.target.checked ? "1" : null)} /> SSD only</label>
+            <label className="check"><input type="checkbox" checked={params.get("photo") === "1"} onChange={(e) => set("photo", e.target.checked ? "1" : null)} /> Specs read from photos</label>
           </div>
         )}
         <div className="fgroup">
@@ -217,6 +218,8 @@ export function specChips(l: Pick<Lot, "device_type" | "cpu" | "ram_gb" | "stora
 
 const KIND_LABEL = { machine: "same machine", similar: "similar machines", spec: "similar spec" } as const;
 
+const PHOTO_FIELD: Record<string, string> = { cpu: "CPU", ramGb: "RAM", storage: "storage" };
+
 const valueWord = (v: number) => (v >= 130 ? "great value" : v >= 115 ? "good value" : v <= 85 ? "pricey for spec" : "typical");
 
 /** Live lots: the expected final range and value index. Closed lots: how the final compared. */
@@ -307,12 +310,13 @@ function LotRow({ lot, now, onOpen, showAuction }: { lot: Lot; now: number; onOp
         ) : lot.category ? (
           <div className="chips"><span className="chip quiet">{lot.category}</span></div>
         ) : null}
-        {(lot.faults.length > 0 || lot.friend_high_bidder || lot.friend_bidders > 0 || others > 0) && (
+        {(lot.faults.length > 0 || lot.friend_high_bidder || lot.friend_bidders > 0 || others > 0 || lot.photo_fields.length > 0) && (
           <div className="tags">
             {lot.faults.map((f) => <span key={f} className={`fault ${MAJOR.has(f) ? "major" : ""}`}>{FAULT_LABEL[f] ?? f}</span>)}
             {lot.friend_high_bidder && <span className="friend">{lot.friend_high_bidder} is the high bidder</span>}
             {!lot.friend_high_bidder && lot.friend_bidders > 0 && <span className="friend">A friend has bid</span>}
             {others > 0 && <span className="watchers">★ {others} other{others === 1 ? "" : "s"}</span>}
+            {lot.photo_fields.length > 0 && <span className="from-photo-tag" title="Read from the lot's photos because the listing didn't say">📷 {lot.photo_fields.map((f) => PHOTO_FIELD[f] ?? f).join(", ")} from photo</span>}
           </div>
         )}
       </div>

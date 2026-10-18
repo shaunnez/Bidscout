@@ -35,6 +35,11 @@ export function showsContact(text: string): boolean {
   return found;
 }
 
+/** The text with email addresses and NZ mobile numbers replaced. */
+export function stripContacts(text: string): string {
+  return text.replace(EMAIL, "[redacted email]").replace(MOBILE, "[redacted phone]");
+}
+
 export interface RedactResult {
   value: unknown;
   redactions: string[];

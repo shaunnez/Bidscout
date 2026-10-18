@@ -9,6 +9,10 @@ export interface Config {
   host: string;
   password: string;
   baseUrl: string;
+  /** Firecrawl API key for Trade Me price lookups (server/trademe.ts); empty turns them off. */
+  firecrawlKey: string;
+  /** Firecrawl's API address; set FIRECRAWL_API_URL for a self-hosted Firecrawl. */
+  firecrawlUrl: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -26,6 +30,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     host: get("BIDSCOUT_HOST") ?? "127.0.0.1",
     password: env.BIDSCOUT_PASSWORD ?? "",
     baseUrl: "https://www.number8.bid",
+    firecrawlKey: get("FIRECRAWL_API_KEY") ?? "",
+    firecrawlUrl: get("FIRECRAWL_API_URL") ?? "https://api.firecrawl.dev/v2",
   };
 }
 

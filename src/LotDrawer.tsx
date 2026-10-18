@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FAULT_LABEL } from "../shared/specs/computer.ts";
-import { api, type Auction, type Citation, type LotDetail, type SpecValue } from "./api.ts";
+import { api, type Auction, type Citation, type LotDetail, type SpecValue, type TradeMeItem, type TradeMeLookup, type TradeMeState } from "./api.ts";
 import { auctionParts, saleReason } from "./auction.ts";
 import { lookupQuery } from "./lookup.ts";
 import { closingWindow, payBy } from "./Auctions.tsx";
@@ -160,7 +160,7 @@ export function LotDrawer({ id, onClose, onOpenLot, onOpenAuction }: {
               </section>
             )}
 
-            <PriceLookup lot={l} />
+            <PriceLookup lot={l} tradeMe={d.tradeMe} onCite={setCite} />
 
             <section className="social-box">
               <div className="social-head">
@@ -206,6 +206,9 @@ export function LotDrawer({ id, onClose, onOpenLot, onOpenAuction }: {
               </section>
             )}
 
+            {d.photoValues.length === 0 && l.photo_ocr_at && (
+              <p className="small muted">📷 {l.photos_read || "The"} photo{l.photos_read === 1 ? "" : "s"} checked {nzDate(l.photo_ocr_at)}: no spec text found.</p>
+            )}
             {d.photoValues.length > 0 && (
               <section>
                 <h3>Read from photos <small className="muted">text found on stickers or screens in the photos</small></h3>
@@ -383,7 +386,23 @@ function SourcePanel({ request, onClose }: { request: CiteRequest; onClose: () =
             </div>
           </>
         )}
-        {c && c.kind !== "photo" && (
+        {c?.kind === "external" && (
+          <>
+            <p className="verdict ok">Price found on the {c.site} listing page</p>
+            <p className="small muted">{c.value} · the words around it, as read through Firecrawl</p>
+            <div className="passage">
+              <span className="dim">{c.excerpt.slice(0, c.start)}</span>
+              <mark ref={mark}>{c.excerpt.slice(c.start, c.end)}</mark>
+              <span className="dim">{c.excerpt.slice(c.end)}</span>
+            </div>
+            <dl className="meta-list">
+              <dt>Page</dt><dd><a href={c.url} target="_blank" rel="noreferrer">Open on {c.site} ↗</a></dd>
+              <dt>Read</dt><dd>{nzDate(c.fetchedAt)}</dd>
+              <dt>Page text</dt><dd><code>sha256 {c.sha256.slice(0, 16)}…</code><div className="small muted">Only these words were kept, with any contact details removed.</div></dd>
+            </dl>
+          </>
+        )}
+        {c && (c.kind === "spec" || c.kind === "field") && (
           <dl className="meta-list">
             <dt>Fetched</dt><dd>{nzDate(c.snapshot.fetchedAt)}</dd>
             <dt>Request</dt><dd><code>{c.snapshot.method} {c.snapshot.url.replace("https://www.number8.bid", "")}</code>{c.snapshot.request && <div><code className="wrap">{decodeURIComponent(c.snapshot.request)}</code></div>}</dd>
@@ -425,7 +444,7 @@ function AuctionBox({ lot, terms, onOpen }: { lot: LotDetail["lot"]; terms: LotD
 }
 
 /** Links to search other sites for a guide price. BidScout opens them; it doesn't read them. */
-function PriceLookup({ lot }: { lot: LotDetail["lot"] }) {
+function PriceLookup({ lot, tradeMe, onCite }: { lot: LotDetail["lot"]; tradeMe: TradeMeState; onCite: (c: CiteRequest) => void }) {
   const [q, setQ] = useState(() => lookupQuery(lot));
   useEffect(() => setQ(lookupQuery(lot)), [lot.id]);
   const e = encodeURIComponent(q.trim());
@@ -446,6 +465,107 @@ function PriceLookup({ lot }: { lot: LotDetail["lot"] }) {
           </a>
         ))}
       </div>
+      <TradeMePrices lot={lot} state={tradeMe} query={q.trim()} onCite={onCite} />
     </section>
+  );
+}
+
+const TM_KIND: Record<string, string> = { sold: "Sold", current_bid: "Current bid", buy_now: "Buy Now", asking: "Asking", starting: "Starts at" };
+const median = (xs: number[]) => {
+  const s = [...xs].sort((a, b) => a - b);
+  return s.length ? (s.length % 2 ? s[(s.length - 1) / 2]! : (s[s.length / 2 - 1]! + s[s.length / 2]!) / 2) : null;
+};
+
+/** The Trade Me prices button and what it found (server/trademe.ts). */
+function TradeMePrices({ lot, state, query, onCite }: { lot: LotDetail["lot"]; state: TradeMeState; query: string; onCite: (c: CiteRequest) => void }) {
+  const [res, setRes] = useState<TradeMeLookup | null>(state.latest);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [ranHere, setRanHere] = useState(0);
+  useEffect(() => {
+    setRes(state.latest);
+    setErr(null);
+    setRanHere(0);
+  }, [lot.id, state.latest]);
+  const run = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api.tradeMe(lot.id, query);
+      setRes(r);
+      if (!r.cached) setRanHere((n) => n + 1);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const priced = (res?.items ?? []).filter((i) => i.verified && i.price);
+  const isSold = (i: TradeMeItem) => i.status === "sold" || i.price_kind === "sold";
+  const sold = priced.filter(isSold).map((i) => Number(i.price));
+  // "On now" is open listings only; ended-unsold or unknown ones aren't prices you can buy at.
+  const live = priced.filter((i) => !isSold(i) && i.status === "open").map((i) => Number(i.price));
+  const cite = (i: TradeMeItem, buyNow = false) =>
+    onCite({
+      title: buyNow ? "Trade Me Buy Now" : "Trade Me price",
+      load: async () => buyNow
+        ? { kind: "external", site: "Trade Me", url: i.url, value: `Buy Now ${money(i.buy_now)}`, excerpt: i.buy_now_excerpt!, start: i.buy_now_start!, end: i.buy_now_end!, fetchedAt: i.fetched_at, sha256: i.page_sha256 }
+        : { kind: "external", site: "Trade Me", url: i.url, value: `${TM_KIND[i.price_kind ?? ""] ?? "Price"} ${money(i.price)}`, excerpt: i.excerpt!, start: i.quote_start!, end: i.quote_end!, fetchedAt: i.fetched_at, sha256: i.page_sha256 },
+    });
+  return (
+    <div className="tm">
+      <div className="tm-head">
+        <button className="primary small-btn" onClick={run} disabled={busy || !query || (!state.available && !res)}>
+          {busy ? "Reading Trade Me…" : res ? "Look again" : "Trade Me prices"}
+        </button>
+        <span className="muted small">{state.available ? `${state.used + ranHere} of ${state.dailyLimit} lookups used today · answers kept 3 days` : state.reason}</span>
+      </div>
+      {busy && <p className="muted small">Finding listings with a web search, then reading up to 5 of them one at a time. Usually 20–60 seconds.</p>}
+      {err && <p className="err small">{err}</p>}
+      {res && !busy && (
+        <>
+          <p className="tm-summary">
+            {priced.length === 0
+              ? <>No confirmed prices from {res.found} listing{res.found === 1 ? "" : "s"}{res.searched ? ` (${res.searched} search results)` : ""}.</>
+              : <>
+                  {sold.length > 0 && <>Sold <b>{money(Math.min(...sold))}{sold.length > 1 ? `–${money(Math.max(...sold))}` : ""}</b> ({sold.length}) · </>}
+                  {live.length > 0 && <>On now <b>{money(Math.min(...live))}{live.length > 1 ? `–${money(Math.max(...live))}` : ""}</b>, median {money(median(live))} ({live.length})</>}
+                  {lot.expected_mid !== null && <> · BidScout expects {money(lot.expected_low)}–{money(lot.expected_high)} all-in here</>}
+                </>}
+          </p>
+          {res.items.length > 0 && (
+            <div className="table-wrap">
+              <table className="table compact">
+                <thead><tr><th>Trade Me listing</th><th>Status</th><th className="r">Price</th></tr></thead>
+                <tbody>
+                  {res.items.map((i) => (
+                    <tr key={i.id} className={i.verified ? "" : "muted"}>
+                      <td>
+                        <a href={i.url} target="_blank" rel="noreferrer">{i.title ?? `Listing ${i.listing_id}`} ↗</a>
+                        <div className="muted small">{[i.condition, i.location, i.bid_count !== null ? `${i.bid_count} bids` : null, i.closes].filter(Boolean).join(" · ")}</div>
+                      </td>
+                      <td className="nowrap"><span className={`tag ${i.status === "sold" ? "reason" : ""}`}>{i.status ?? "?"}</span></td>
+                      <td className="r num">
+                        {i.price === null ? "–" : i.verified
+                          ? <button className="cite inline" onClick={() => cite(i)}>{money(i.price)}</button>
+                          : <span title="Read by Firecrawl but not found in the page text, so not used">{money(i.price)}?</span>}
+                        <div className="muted small">
+                          {TM_KIND[i.price_kind ?? ""] ?? ""}
+                          {i.buy_now && i.buy_now_excerpt && i.price_kind !== "buy_now" && <> · <button className="cite inline" onClick={() => cite(i, true)}>Buy Now {money(i.buy_now)}</button></>}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="footnote">
+            Web search for “{res.query}”, {nzDate(res.created_at)}{res.cached ? " (saved answer)" : ""}. Each price opens the words it came from on the listing.
+            Greyed prices couldn't be found in the page text and aren't counted. Trade Me prices are asking or sold prices before any fees.
+          </p>
+        </>
+      )}
+    </div>
   );
 }

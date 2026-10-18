@@ -17,6 +17,8 @@ export interface SearchQuery {
   closingHours?: number;
   auction?: number;
   watch?: boolean;
+  /** Only lots with a spec read from their photos. */
+  photo?: boolean;
   sort?: "closing" | "newest" | "price" | "deal" | "bids" | "ended" | "value" | "expected" | "score";
   page?: number;
   perPage?: number;
@@ -44,6 +46,7 @@ export function parseQuery(q: Record<string, unknown>): SearchQuery {
     closingHours: number(q.closingHours),
     auction: number(q.auction),
     watch: q.watch === "1",
+    photo: q.photo === "1",
     sort: (["closing", "newest", "price", "deal", "bids", "ended", "value", "expected", "score"] as const).find((s) => s === q.sort),
     page: Math.max(1, number(q.page) ?? 1),
     perPage: Math.min(100, Math.max(10, number(q.perPage) ?? 40)),
@@ -133,6 +136,7 @@ function where(q: SearchQuery, params: unknown[], skip?: string) {
   if (q.closingHours) w.push(`l.status='open' AND l.ends_at <= now() + make_interval(hours => ${p(q.closingHours)})`);
   if (q.auction) w.push(`l.auction_id = ${p(q.auction)}`);
   if (q.watch) w.push(`w.lot_id IS NOT NULL`);
+  if (q.photo) w.push(`cardinality(l.photo_fields) > 0`);
   return w.length ? `WHERE ${w.join(" AND ")}` : "";
 }
 

@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
-import { account, type AdminUser, type Me, type ScanSettings } from "./api.ts";
+import { account, type AdminUser, type Me, type ScanSettings, type SettingsResponse } from "./api.ts";
 import { nzDate } from "./format.ts";
 
 export function Settings({ me }: { me: Me }) {
   const [scan, setScan] = useState<ScanSettings | null>(null);
   const [hours, setHours] = useState<number[]>([]);
+  const [tm, setTm] = useState<Pick<SettingsResponse, "trademe" | "trademeLimitOptions" | "trademeKeySet"> | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [nu, setNu] = useState({ username: "", display_name: "", password: "", is_admin: false });
 
   const load = () => {
-    account.settings().then((r) => { setScan(r.scan); setHours(r.liveHourOptions); }).catch(() => {});
+    account.settings().then((r) => { setScan(r.scan); setHours(r.liveHourOptions); setTm(r); }).catch(() => {});
     if (me.is_admin) account.users().then((r) => setUsers(r.users)).catch(() => {});
   };
   useEffect(load, [me.is_admin]);
@@ -47,6 +48,28 @@ export function Settings({ me }: { me: Me }) {
             </select>
           </label>
           <p className="muted small">Starts stay at least 0.3 s apart, and a scan drops to one request at a time if number8.bid slows down or asks us to back off.</p>
+        </section>
+      )}
+      {tm && (
+        <section className="card">
+          <h3>Trade Me prices</h3>
+          <p className="muted small">
+            A button on each lot that finds matching Trade Me listings with a web search, then reads up to 5 listing pages through
+            Firecrawl. It never opens Trade Me's search pages (its robots.txt disallows them), checks robots.txt before every page,
+            and keeps only the words around each price. Answers are reused for 3 days.
+          </p>
+          {!tm.trademeKeySet && <p className="warn small">Needs a Firecrawl API key: set FIRECRAWL_API_KEY in Railway's variables, then redeploy.</p>}
+          <label className="check">
+            <input type="checkbox" disabled={!me.is_admin || !tm.trademeKeySet} checked={tm.trademe.enabled}
+              onChange={(e) => run(() => account.saveTradeMe({ enabled: e.target.checked }), e.target.checked ? "Trade Me prices on." : "Trade Me prices off.")} />
+            Turn on Trade Me prices
+          </label>
+          <label className="select"><span>Lookups per day (whole group)</span>
+            <select disabled={!me.is_admin} value={tm.trademe.dailyLimit} onChange={(e) => run(() => account.saveTradeMe({ dailyLimit: Number(e.target.value) }), "Saved.")}>
+              {tm.trademeLimitOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+          <p className="muted small">Each lookup uses about 6 Firecrawl requests (1 search, up to 5 pages). Trade Me's terms still apply; ask them if you plan to use it a lot.</p>
         </section>
       )}
       {me.is_admin && (
