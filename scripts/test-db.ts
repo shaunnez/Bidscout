@@ -4,7 +4,7 @@ import pg from "pg";
 import { loadConfig } from "../server/config.ts";
 
 /** Creates a throwaway database, runs tests/db/*.test.ts against it, then drops it. */
-const base = new URL(loadConfig().databaseUrl);
+const base = new URL(process.env.E2E_POSTGRES_ADMIN_URL?.trim() || loadConfig().databaseUrl);
 const name = `bidscout_test_${crypto.randomBytes(4).toString("hex")}`;
 const admin = new pg.Client({ connectionString: base.toString() });
 await admin.connect();

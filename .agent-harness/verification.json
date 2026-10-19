@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "commands": [
+    { "id": "typecheck", "title": "Strict TypeScript", "command": ["npm", "run", "typecheck"] },
+    { "id": "test", "title": "Unit tests", "command": ["npm", "test"] },
+    { "id": "test-db", "title": "Database integration tests", "command": ["npm", "run", "test:db"] },
+    { "id": "build", "title": "Production UI build", "command": ["npm", "run", "build"] }
+  ]
+}

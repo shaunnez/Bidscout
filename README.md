@@ -136,6 +136,10 @@ tests/       unit (parsers, transport, redaction) and db (whole pipeline against
 
 ## Tests
 
+The harness runs the committed `.agent-harness/verification.json` commands. Database tests use
+`E2E_POSTGRES_ADMIN_URL` when set, otherwise the normal local database configuration. This must
+point to a test Postgres service where the user can create and drop throwaway databases.
+
 ```sh
 npm run typecheck
 npm test            # parsers, spec score, photo values, transport retries and pacing, redaction
