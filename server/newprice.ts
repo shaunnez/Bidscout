@@ -4,6 +4,7 @@ import type { ParallelSearch, SearchHit } from "./parallel.ts";
 import { stripContacts } from "./redact.ts";
 import { getTradeMeSettings } from "./settings.ts";
 import { autoStatus, linkLot, loadLookup, LookupError, queryKey, tidyQuery, tradeMeStatus } from "./trademe.ts";
+import { isRating, modelNumber } from "../shared/lookup.ts";
 
 /**
  * New price in NZ for a product (mostly lots that aren't computers): a web search through
@@ -35,10 +36,18 @@ const NOT_AFTER = /^\s*(?:off|per\b|\/\s*(?:wk|week|mth|month|fortnight)|p\/?m\b
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-/** Where the product is named in the text: the model number if the search has one, else most of its words. */
-export function productMention(text: string, query: string): number {
-  // The longest word with digits (and letters, or 4+ digits): "7100123456" in "3M 7100123456", not "3M".
-  const model = query.split(/\s+/).filter((w) => /\d/.test(w) && (/[a-z]/i.test(w) || w.replace(/\D/g, "").length >= 4)).sort((a, b) => b.length - a.length)[0];
+/**
+ * The model a shop page must name: the lot's own model number when the search contains it (the
+ * listing says what it is), else the search's last model-like word that isn't a size or rating
+ * ("DHP486" in "Makita DHP486 18V", "X100" in "WD-40 X100").
+ */
+export function searchModel(query: string, lotModel?: string | null): string | undefined {
+  if (lotModel && norm(query).includes(norm(lotModel))) return lotModel;
+  return query.split(/\s+/).filter((w) => /\d/.test(w) && !isRating(w) && (/[a-z]/i.test(w) || w.replace(/\D/g, "").length >= 3)).pop();
+}
+
+/** Where the product is named in the text: the model number if there is one, else most of the search's words. */
+export function productMention(text: string, query: string, model = searchModel(query)): number {
   if (model) {
     const want = norm(model);
     // Compare without spaces or dashes ("SHI2000-22" = "SHI 2000 22"), mapping back to the text.
@@ -55,7 +64,7 @@ export function productMention(text: string, query: string): number {
 }
 
 /** The price nearest the product's name in one page's words, quoted with the words around it. */
-export function shopPrice(hit: SearchHit, query: string): ShopPrice | null {
+export function shopPrice(hit: SearchHit, query: string, model = searchModel(query)): ShopPrice | null {
   let host: string;
   try {
     host = new URL(hit.url).hostname.replace(/^www\./, "");
@@ -67,7 +76,7 @@ export function shopPrice(hit: SearchHit, query: string): ShopPrice | null {
   let best: (ShopPrice & { dist: number }) | null = null;
   for (const raw of hit.excerpts) {
     const text = stripContacts(raw.replace(/\s+/g, " "));
-    const at = productMention(text, query);
+    const at = productMention(text, query, model);
     if (at < 0) continue;
     for (const m of text.matchAll(PRICE)) {
       const i = m.index!;
@@ -162,6 +171,9 @@ async function run(deps: NewPriceDeps, input: { lotId: number | null; userId: nu
   let error: string | null = null;
   let hits: SearchHit[] = [];
   const shops: ShopPrice[] = [];
+  // For a lot, the model its listing names is what a shop page must mention.
+  const lot = input.lotId === null ? null : (await db.query(`SELECT title, description FROM lots WHERE id=$1`, [input.lotId])).rows[0];
+  const model = searchModel(query, lot ? modelNumber(lot.description ?? "", lot.title) : null);
   try {
     hits = await parallel.search(
       `Current retail price in New Zealand dollars of the ${query}, new, from New Zealand shops.`,
@@ -170,7 +182,7 @@ async function run(deps: NewPriceDeps, input: { lotId: number | null; userId: nu
     );
     const seen = new Set<string>();
     for (const h of hits) {
-      const shop = shopPrice(h, query);
+      const shop = shopPrice(h, query, model);
       if (!shop || seen.has(shop.host)) continue;
       seen.add(shop.host);
       shops.push(shop);

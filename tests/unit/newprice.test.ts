@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isBulkLot, modelNumber, productQuery } from "../../shared/lookup.ts";
-import { productMention, shopPrice } from "../../server/newprice.ts";
+import { productMention, searchModel, shopPrice } from "../../server/newprice.ts";
 
 test("search text for products: brand and model from the description; bulk lots get none", () => {
   assert.equal(productQuery("EPEVER Pure Sine Wave Inverter", "EPEVER Pure Sine Wave Inverter Model – SHI2000-22(AU)"), "EPEVER SHI2000-22");
@@ -40,4 +40,17 @@ test("shop prices: RRP, list and ex-GST prices aren't the shop's price; the mode
   assert.equal(productMention("3M 7100123456 safety glasses $12", "3M 7100123456"), 3);
   const c = shopPrice({ url: "https://shop.co.nz/p", title: "Call 021 234 5678 for SHI2000-22", excerpts: ["SHI2000-22 $949"] }, "EPEVER SHI2000-22");
   assert.ok(c && !c.title!.includes("234 5678"), "contact details removed from the title");
+});
+
+test("the model a shop must name is the last model-like word of the search, not the brand", () => {
+  assert.equal(productMention("WD-40 multi-use spray $12", "WD-40 X100"), -1);
+  assert.equal(productMention("WD-40 X100 applicator $12", "WD-40 X100"), 6);
+});
+
+test("the model: the lot's own model when the search has it, else the last model-like word that isn't a rating", () => {
+  assert.equal(searchModel("Makita DHP486 18V"), "DHP486", "18V is a rating");
+  assert.equal(searchModel("EPEVER SHI2000-22 2000W"), "SHI2000-22");
+  assert.equal(searchModel("WD-40 X100 applicator", "X100"), "X100", "the lot's model wins");
+  assert.equal(searchModel("Acme X100 kit", "Q-7"), "X100", "the lot's model isn't used when the search doesn't contain it");
+  assert.equal(productMention("Makita 18V drill, any model $199", "Makita DHP486 18V"), -1);
 });

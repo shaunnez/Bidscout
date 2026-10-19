@@ -417,6 +417,10 @@ test("Against Trade Me: median buy-now price, faulty listings left out, % now an
   const saved = await tradeMeLookup(deps, { lotId: 7100, userId: user, query: "Dell Latitude 7420" });
   const fresh = await tradeMeLookup(deps, { lotId: 7100, userId: user, query: "Dell Latitude 7420", fresh: true });
   assert.deepEqual([saved.cached, fresh.cached, fresh.id > saved.id], [true, false, true], "Look again searches fresh");
+  let calls = 0;
+  const counting: TradeMeSearcher = { name: "parallel", async search(u) { calls++; await new Promise((r) => setTimeout(r, 20)); return searcher.search(u); } };
+  const both = await Promise.all([1, 2].map(() => tradeMeLookup({ ...deps, searchers: [counting] }, { lotId: 7100, userId: user, query: "Dell Latitude 7420", fresh: true })));
+  assert.deepEqual([calls, both[0].id === both[1].id], [1, true], "two Look again presses at once run one search");
 
   const all = await searchLots(db, parseQuery({ tm: "1", sort: "tm" }), user);
   const [a, b] = all.items.filter((l: { id: number }) => l.id === 7100 || l.id === 7101);

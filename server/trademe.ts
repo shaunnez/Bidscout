@@ -225,7 +225,7 @@ export const linkLot = (db: Db, lookupId: number, lotId: number | null) =>
     : db.query(`INSERT INTO price_lookup_lots (lookup_id, lot_id) VALUES ($1,$2) ON CONFLICT (lookup_id, lot_id) DO UPDATE SET used_at = now()`, [lookupId, lotId]);
 
 /** Lookups in progress in this process, by query key. */
-const running = new Map<string, { id: number; done: Promise<unknown> }>();
+const running = new Map<string, { id: Promise<number>; done: Promise<unknown> }>();
 
 /** Lookups left 'running' by a restart will never finish: mark them failed (one process runs lookups). */
 export async function failInterruptedLookups(db: Pick<Db, "query">) {
@@ -290,20 +290,26 @@ export async function tradeMeLookup(deps: LookupDeps, input: { lotId: number | n
   }
   const inFlight = running.get(key);
   if (inFlight) {
-    // In the background: the same lookup, still running. Otherwise wait for it and take its answer.
+    // The same lookup, still running (a fresh one too): its row, or the error that stopped it.
+    const joined = await inFlight.id;
     if (input.background) {
       // This lot gets the shared answer too, once it's in.
-      inFlight.done.then(async () => { await linkLot(db, inFlight.id, input.lotId); }).catch(() => {});
-      return { ...(await loadLookup(db, inFlight.id))!, cached: false };
+      inFlight.done.then(async () => { await linkLot(db, joined, input.lotId); }).catch(() => {});
+      return { ...(await loadLookup(db, joined))!, cached: false };
     }
+    // Wait for it and take its answer (not fresh again: that answer is the fresh one).
     await inFlight.done.catch(() => {});
-    return tradeMeLookup(deps, input);
+    return tradeMeLookup(deps, { ...input, fresh: false });
   }
-  const id = await reserve(deps, input, query, key, now);
-  const done = run(deps, id, plan, sleep, now)
-    .then(async () => { await linkLot(db, id, input.lotId); })
+  // Registered before the first await, so a second request for the same search joins this one
+  // instead of reserving another of the day's lookups.
+  const idP = reserve(deps, input, query, key, now);
+  const done = idP
+    .then((id) => run(deps, id, plan, sleep, now).then(async () => { await linkLot(db, id, input.lotId); }))
     .finally(() => running.delete(key));
-  running.set(key, { id, done });
+  done.catch(() => {});
+  running.set(key, { id: idP, done });
+  const id = await idP;
   if (input.background) {
     // The answer (or the error) is saved on the lookup row; the caller polls loadLookup.
     done.catch(() => {});

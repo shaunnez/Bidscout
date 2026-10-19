@@ -23,7 +23,8 @@ export const NOT_BULK = `l.title !~* '\\m(pallets? (lot|of|load)|bulk|assorted|m
  */
 export const MODELISH = `(l.description ~ '(?=[A-Z0-9./-]*[0-9])(?=[A-Z0-9./-]*[A-Z])[A-Z0-9][A-Z0-9./-]{3,}[A-Z0-9]'
   OR l.title ~ '(?=[A-Z0-9./-]*[0-9])(?=[A-Z0-9./-]*[A-Z])[A-Z0-9][A-Z0-9./-]{3,}[A-Z0-9]'
-  OR l.description ~* '\\m(model|part\\s*(no|number)|p/n|pn|sku|mpn)\\M')`;
+  OR l.description ~* '\\m(model|part\\s*(no|number)|p/n|pn|sku|mpn)\\M'
+  OR l.title ~* '\\m(model|part\\s*(no|number)|p/n|pn|sku|mpn)\\M')`;
 const HAS = (source: string, days: string) => `EXISTS (SELECT 1 FROM price_lookup_lots k JOIN price_lookups pl ON pl.id = k.lookup_id
   WHERE k.lot_id = l.id AND pl.status = 'ok' AND pl.source = '${source}' AND pl.created_at > now() - make_interval(days => ${days}))`;
 
@@ -64,13 +65,14 @@ export async function lotsToPrice(db: Pick<Db, "query">, limit = BATCH, noModel:
  * whichever process runs the loop).
  */
 export async function autoProgress(db: Pick<Db, "query">) {
-  const r = await db.query(
-    `SELECT count(*) AS open,
-            -- Priced: a Trade Me answer, and for a product with a model number a new price too.
-            count(*) FILTER (WHERE ${HAS("trademe", "$1")} AND (l.is_it OR NOT ${MODELISH} OR ${HAS("newprice", "$2")})) AS priced
+  // Priced: a Trade Me answer, and for a product with a model number (modelNumber decides, as in
+  // the worker) a new price too. Worked out from the database, whichever process runs the loop.
+  const rows = (await db.query(
+    `SELECT l.is_it, l.title, l.description, ${HAS("trademe", "$1")} AS has_tm, ${HAS("newprice", "$2")} AS has_new
      FROM lots l WHERE l.status = 'open' AND (l.ends_at IS NULL OR l.ends_at > now()) AND ${NOT_BULK}`,
     [CACHE_DAYS, NEW_CACHE_DAYS],
-  );
+  )).rows as Array<{ is_it: boolean; title: string; description: string | null; has_tm: boolean; has_new: boolean }>;
+  const priced = rows.filter((l) => l.has_tm && (l.is_it || l.has_new || !modelNumber(l.description ?? "", l.title))).length;
   const s = await autoStatus(db);
   const running = Number((await db.query(`SELECT count(*) AS n FROM price_lookups WHERE origin='auto' AND status='running'`)).rows[0].n);
   const recent = (await db.query(
@@ -83,7 +85,7 @@ export async function autoProgress(db: Pick<Db, "query">) {
     ? (await db.query(`SELECT min(created_at) AS at FROM price_lookups WHERE source IN ('trademe','newprice') AND origin='auto' AND created_at > now() - interval '24 hours'`)).rows[0].at
     : null;
   const resumesAt = oldest ? new Date(new Date(oldest).getTime() + 86_400_000).toISOString() : null;
-  return { openLots: Number(r.rows[0].open), priced: Number(r.rows[0].priced), used: s.used, dailyLimit: s.dailyLimit, running, recent, resumesAt };
+  return { openLots: rows.length, priced, used: s.used, dailyLimit: s.dailyLimit, running, recent, resumesAt };
 }
 
 export interface AutoDeps {
